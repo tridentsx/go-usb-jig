@@ -45,13 +45,13 @@ correctly re-enumerated as real `fx2lafw`. `fx2lib` (source only, no build
 artifacts) is now vendored into `firmware/fx2lib/`, and this project's own
 firmware (`firmware/hw/go-usb-jig/`) is built on top of it instead of a
 hand-rolled register file. **That firmware now boots and enumerates
-correctly on real hardware** — `ClaimInterface` succeeds, `BulkTransfer`
-OUT succeeds, and a `BulkTransfer` IN on the loopback endpoint returns real
-data end-to-end (mechanism fully verified; the loopback's *content* still
-has a bug — it echoes a fixed pattern instead of what was sent, and the
-interrupt endpoint returns `kIOReturnBadArgument` — both real, tractable
-firmware-logic bugs to chase next, a much better place to be than "nothing
-boots").
+correctly on real hardware, and both endpoints work end to end**:
+`BulkTransfer` OUT/IN on the loopback endpoints and `InterruptTransfer` on
+the heartbeat endpoint all pass on a fresh flash.
+
+Two more bugs turned up chasing what first looked like firmware problems,
+neither of which was actually in the firmware — see "Firmware status"
+below for what they really were.
 
 ## Endpoint map
 
@@ -81,12 +81,28 @@ clean && make` was run and produced an identical build before this was
 written). Building it does not flash it — that's `cmd/flash`, a separate
 step over USB.
 
-Known real bugs, both firmware-logic issues rather than toolchain/protocol
-problems:
-- The bulk loopback (`EP2 OUT` → `EP6 IN`) mechanism works, but the
-  content is wrong: it returns a fixed repeating pattern instead of
-  echoing what was sent.
-- The interrupt endpoint (`EP1 IN`) returns `kIOReturnBadArgument`.
+The firmware itself has no known bugs. Two things that looked like firmware
+bugs at first turned out to be elsewhere:
+
+- **Bulk loopback occasionally returning a fixed repeating pattern
+  instead of the echoed data.** Not a firmware bug: running the test suite
+  repeatedly against an already-running device (no reflash between runs)
+  left stale packets in `EP6 IN`'s quad buffer from a previous run. Fixed
+  in `jig_test.go`'s `openJig` by calling `SetInterfaceAltSetting(0, 0)`
+  after claiming, which triggers the firmware's `handle_set_interface` and
+  resets both endpoints' FIFOs on every test run, not just after a flash.
+- **The interrupt endpoint (`EP1 IN`) returning `kIOReturnBadArgument`.**
+  A real bug, but in [go-usb](https://github.com/kevmo314/go-usb), not this
+  firmware: its darwin backend's `InterruptTransfer` delegated to
+  `BulkTransfer`, which defaults a zero timeout to 5000ms and therefore
+  always called IOKit's `ReadPipeTO`/`WritePipeTO`. Confirmed against this
+  board's real interrupt endpoint that those timeout variants fail with
+  `kIOReturnBadArgument` specifically for interrupt-type pipes, while the
+  plain (non-timeout) `ReadPipe`/`WritePipe` on the exact same pipe
+  succeed. Fixed upstream (see go-usb's `transfer_darwin.go`); a second,
+  unrelated bug in this repo's own `TestInterruptHeartbeat` (comparing two
+  slices that aliased the same backing array, so it could never have
+  detected a real advance) was fixed alongside it.
 
 Unlike the from-scratch attempt's `fx2regs.h`, nothing here needs a `VERIFY
 against the TRM` disclaimer — every register/macro used comes from
@@ -104,13 +120,13 @@ The `jig` build tag keeps these entirely out of `go test ./...` without it —
 they need the board attached and running this repo's firmware, not the
 stock firmware it ships with. Each test skips (not fails) if the board
 isn't found at all, but will fail with a clear "no pipe for endpoint"
-error if it's attached but still running different firmware — which is
-exactly what happens today, since the custom firmware hasn't been flashed
-yet.
+error if it's attached but still running different firmware. Flash this
+repo's firmware first with `go run ./cmd/flash firmware/firmware.ihx`
+(build it with `cd firmware && make` if `firmware.ihx` isn't there yet).
 
 ## go.mod
 
-Depends on `github.com/kevmo314/go-usb`, replaced to point at
-[tridentsx/go-usb](https://github.com/tridentsx/go-usb)'s
-`darwin/isochronous` branch until PRs #18–#21 merge upstream. Update the
-`replace` directive (or remove it) once they do.
+Depends on `github.com/kevmo314/go-usb`, replaced to point at a commit on
+[tridentsx/go-usb](https://github.com/tridentsx/go-usb)'s `darwin/async-bulk`
+branch until PRs #18–#22 merge upstream. Update the `replace` directive (or
+remove it) once they do.

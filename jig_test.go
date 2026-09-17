@@ -44,6 +44,13 @@ const (
 // services from macOS's own automatic configuration alone, found the hard
 // way when ClaimInterface kept failing with ErrDeviceNotFound despite the
 // device already reporting itself configured.
+//
+// SetInterfaceAltSetting(0, 0) after claiming forces a SET_INTERFACE
+// request, which the firmware's handle_set_interface (see
+// firmware/hw/go-usb-jig/main.c) uses to reset EP2/EP6's FIFOs and data
+// toggles. Without it, packets left over in EP6 IN's quad buffer from a
+// previous test run in the same process (no reflash between runs) can
+// surface on the next BulkTransfer read, making TestBulkLoopback flaky.
 func openJig(t *testing.T) *usb.DeviceHandle {
 	t.Helper()
 
@@ -79,6 +86,10 @@ func openJig(t *testing.T) *usb.DeviceHandle {
 	}
 	t.Cleanup(func() { handle.ReleaseInterface(0) })
 
+	if err := handle.SetInterfaceAltSetting(0, 0); err != nil {
+		t.Fatalf("SetInterfaceAltSetting(0, 0): %v", err)
+	}
+
 	return handle
 }
 
@@ -111,25 +122,45 @@ func TestBulkLoopback(t *testing.T) {
 	}
 }
 
-// TestInterruptHeartbeat reads EP1 IN twice and checks the byte advanced.
-// Known broken right now: returns kIOReturnBadArgument. See README.
+// readInterrupt reads one byte from EP1 IN, retrying a bounded number of
+// times on kIOReturnAborted. Claiming and releasing the interface's pipes
+// repeatedly across back-to-back test runs (no device reset in between)
+// occasionally leaves a stale in-flight request that IOKit reports as an
+// abort on the very next read; a short retry clears it without masking any
+// other error.
+func readInterrupt(t *testing.T, handle *usb.DeviceHandle, buf []byte) int {
+	t.Helper()
+	const maxAttempts = 3
+	for attempt := 1; ; attempt++ {
+		n, err := handle.InterruptTransfer(epInterruptIn, buf, 2*time.Second)
+		if err == nil {
+			return n
+		}
+		if attempt == maxAttempts {
+			t.Fatalf("InterruptTransfer: %v (after %d attempts)", err, attempt)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestInterruptHeartbeat reads EP1 IN twice into separate buffers and checks
+// the byte advanced between reads.
 func TestInterruptHeartbeat(t *testing.T) {
 	handle := openJig(t)
 
-	buf := make([]byte, 1)
-	n, err := handle.InterruptTransfer(epInterruptIn, buf, 2*time.Second)
-	if err != nil {
-		t.Fatalf("InterruptTransfer 1: %v", err)
-	}
-	first := buf[:n]
+	buf1 := make([]byte, 1)
+	n := readInterrupt(t, handle, buf1)
+	first := buf1[:n]
 
-	time.Sleep(10 * time.Millisecond)
+	// EP1 IN has bInterval=8 in the high-speed descriptor, which the host
+	// controller decodes as a 2^(8-1) = 128 microframe (16ms) polling
+	// interval; a shorter gap can read the same not-yet-repolled packet
+	// twice.
+	time.Sleep(25 * time.Millisecond)
 
-	n, err = handle.InterruptTransfer(epInterruptIn, buf, 2*time.Second)
-	if err != nil {
-		t.Fatalf("InterruptTransfer 2: %v", err)
-	}
-	second := buf[:n]
+	buf2 := make([]byte, 1)
+	n = readInterrupt(t, handle, buf2)
+	second := buf2[:n]
 
 	if len(first) != 1 || len(second) != 1 {
 		t.Fatalf("expected 1-byte heartbeat, got %d then %d bytes", len(first), len(second))

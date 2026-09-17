@@ -110,7 +110,10 @@ highspd_dscr_end:
 	.db	ENDPOINT_TYPE_INT
 	.db	0x40			; 64 bytes
 	.db	0x00
-	.db	0x01			; 1ms interval
+	.db	0x08			; bInterval: high speed encodes this as
+					; 2^(bInterval-1) microframes, so 8 = 128
+					; microframes = 16ms; bInterval=1 (every
+					; microframe) was needlessly aggressive.
 
 	; EP2 OUT, bulk
 	.db	DSCR_ENDPOINT_LEN
@@ -166,7 +169,8 @@ fullspd_dscr_end:
 	.db	ENDPOINT_TYPE_INT
 	.db	0x40
 	.db	0x00
-	.db	0x01
+	.db	0x08			; bInterval, full speed: a direct frame
+					; count (1ms units), so 8 = 8ms.
 
 	; EP2 OUT, bulk
 	.db	DSCR_ENDPOINT_LEN
