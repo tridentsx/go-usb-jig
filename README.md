@@ -20,32 +20,38 @@ The board used during development is a Cypress FX2/FX2LP dev board
 (`0925:3881`), the common default VID:PID for that chip's stock loader
 firmware — cheap and widely available.
 
-**Update, first real flash attempts (2026-09-17):** the actual board on hand
-turned out to be a cheap FX2-based USB logic analyzer clone (24MHz,
-8-channel, sealed plastic enclosure, no buttons or jumpers — instantly
-recognizable by that description). It boots real application firmware from
-an onboard EEPROM, not a bare bootloader, so the standard `0xA0`
-RAM-download vendor command (`cmd/flash`) is accepted at the USB protocol
-level but silently did nothing on the first attempt.
+**Update (2026-09-17):** the actual board on hand turned out to be a cheap
+FX2-based USB logic analyzer clone (24MHz, 8-channel, sealed plastic
+enclosure, no buttons or jumpers — instantly recognizable by that
+description), running real application firmware from an onboard EEPROM
+rather than a bare bootloader. A first from-scratch firmware attempt
+(register values transcribed from memory, no verified source) never got
+past enumeration — the standard `0xA0` RAM-download command was accepted at
+the USB protocol level but the new code never actually took effect.
 
-`cmd/flash` was then cross-checked against known-good firmware to isolate
-whether the loader itself was at fault: loading two different real
-`fx2lafw` binaries (bundled with `libsigrok`, one via `cmd/flash`'s raw-binary
-path, one converted to Intel HEX and loaded via its `.ihx` path) both
-correctly changed the device's VID:PID to match whichever image was
-loaded (`04b4:8613` and `0925:3881` respectively, each with the matching
-product string). **The loader is proven correct, both code paths.**
+`cmd/flash` was cross-checked against known-good firmware to rule out the
+loader itself: loading real `fx2lafw` binaries (bundled with `libsigrok`,
+one via `cmd/flash`'s raw-binary path, one converted to Intel HEX via
+`cmd/bin2hex` and loaded via its `.ihx` path) both correctly changed the
+device's VID:PID to match whichever image was loaded. **The loader was
+proven correct**, isolating the bug to the firmware itself.
 
-That isolates the bug entirely to this repo's own firmware — and to
-something sharper than "missing renumeration": a direct `GET_DESCRIPTOR`
-control transfer sent straight to the device after flashing our firmware
-never returned a single byte of our own descriptor table, even with the
-chip in a known-clean state beforehand. The most likely explanation is
-that `main()` hangs or crashes almost immediately, before it ever gets far
-enough to service any USB request — not that it runs but never announces
-itself. Next debugging step: bisect from a deliberately minimal firmware
-(touch nothing but the polling loop) up to the current one, rather than
-auditing the full register set against the TRM in one pass.
+The fix: rather than keep debugging a from-scratch register file with no
+verified source, the real `sigrok-firmware-fx2lafw` firmware source and its
+`fx2lib` dependency were fetched (via `git clone`, not a paraphrased
+summary) and built from scratch with this project's own SDCC to confirm the
+whole toolchain end-to-end — that fresh build, flashed with `cmd/flash`,
+correctly re-enumerated as real `fx2lafw`. `fx2lib` (source only, no build
+artifacts) is now vendored into `firmware/fx2lib/`, and this project's own
+firmware (`firmware/hw/go-usb-jig/`) is built on top of it instead of a
+hand-rolled register file. **That firmware now boots and enumerates
+correctly on real hardware** — `ClaimInterface` succeeds, `BulkTransfer`
+OUT succeeds, and a `BulkTransfer` IN on the loopback endpoint returns real
+data end-to-end (mechanism fully verified; the loopback's *content* still
+has a bug — it echoes a fixed pattern instead of what was sent, and the
+interrupt endpoint returns `kIOReturnBadArgument` — both real, tractable
+firmware-logic bugs to chase next, a much better place to be than "nothing
+boots").
 
 ## Endpoint map
 
@@ -57,28 +63,36 @@ bandwidth negotiation, which a test jig doesn't need):
 |---|---|---|
 | EP1 IN | Interrupt | Free-running heartbeat byte |
 | EP2 OUT | Bulk | Loopback source |
-| EP6 IN | Isochronous | Free-running counter pattern |
-| EP8 IN | Bulk | Echoes whatever EP2 OUT last received |
-| EP0 | Control (vendor) | Stall-an-endpoint, read/write internal RAM |
+| EP6 IN | Bulk | Echoes whatever EP2 OUT last received |
+| EP0 | Control | Standard requests only for now (see below) |
+
+Isochronous and vendor RAM/stall commands were in the original (broken)
+design and are not yet back in the `fx2lib`-based rebuild; they're the
+natural next addition once the bulk/interrupt baseline above is fully
+debugged. `EP8` isn't used in this version.
 
 ## Firmware status
 
-**Draft, not yet verified against real hardware.** It compiles cleanly with
-SDCC (`cd firmware && make`), but the register-level constants in
-`firmware/fx2regs.h` and several mechanisms in `firmware/main.c` (marked
-`VERIFY` in comments) were written from memory rather than checked against
-the Cypress EZ-USB FX2LP Technical Reference Manual, unlike the macOS IOKit
-work in the main go-usb repo, which was checked against the actual SDK
-headers line by line. Getting a register address wrong here doesn't fail to
-compile — it silently misconfigures the chip. Cross-check every `VERIFY`
-comment against the TRM before flashing, or consider rebuilding on top of
-`fx2lib` (a maintained, tested open-source FX2 register/USB library —
-search for it rather than trusting a pasted link), which would remove most
-of that risk at the cost of an external dependency.
+**Boots and enumerates correctly on real hardware**, built on `fx2lib`
+(vendored in `firmware/fx2lib/`, source only — see its own `README`/
+`COPYING`) instead of a from-scratch register file. `cd firmware && make`
+builds `firmware.ihx` reproducibly from a clean checkout (verified: `make
+clean && make` was run and produced an identical build before this was
+written). Building it does not flash it — that's `cmd/flash`, a separate
+step over USB.
 
-Building firmware.ihx does not flash it. A separate loader tool
-(`fxload`/`cycfx2prog`, not included here) writes it into the FX2's RAM over
-USB.
+Known real bugs, both firmware-logic issues rather than toolchain/protocol
+problems:
+- The bulk loopback (`EP2 OUT` → `EP6 IN`) mechanism works, but the
+  content is wrong: it returns a fixed repeating pattern instead of
+  echoing what was sent.
+- The interrupt endpoint (`EP1 IN`) returns `kIOReturnBadArgument`.
+
+Unlike the from-scratch attempt's `fx2regs.h`, nothing here needs a `VERIFY
+against the TRM` disclaimer — every register/macro used comes from
+`fx2lib`'s real, shipped source, cross-checked against
+`sigrok-firmware-fx2lafw`'s own `fx2lafw.c` (also fetched via `git clone`,
+not paraphrased) for usage patterns.
 
 ## Running the tests
 

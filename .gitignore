@@ -8,5 +8,22 @@ firmware/*.map
 firmware/*.mem
 firmware/*.rst
 
+firmware/hw/*/*.rel
+firmware/hw/*/*.lst
+firmware/hw/*/*.sym
+firmware/hw/*/*.asm
+firmware/hw/*/*.rst
+
+firmware/fx2lib/lib/*.rel
+firmware/fx2lib/lib/*.lib
+firmware/fx2lib/lib/*.asm
+firmware/fx2lib/lib/*.lst
+firmware/fx2lib/lib/*.sym
+firmware/fx2lib/lib/interrupts/*.rel
+firmware/fx2lib/lib/interrupts/*.lib
+firmware/fx2lib/lib/interrupts/*.asm
+firmware/fx2lib/lib/interrupts/*.lst
+firmware/fx2lib/lib/interrupts/*.sym
+
 /flash
 /jig
