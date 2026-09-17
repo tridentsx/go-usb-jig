@@ -30,7 +30,6 @@ const (
 	epInterruptIn = 0x81
 	epBulkOut     = 0x02
 	epBulkIn      = 0x86
-	epIsoIn       = 0x08 // bare endpoint number; IsochronousTransferIn ORs in the direction bit itself
 )
 
 // Vendor request numbers for the scratch-RAM read/write test; see
@@ -239,29 +238,8 @@ func TestEndpointStall(t *testing.T) {
 	}
 }
 
-// TestIsochronousCounter reads a burst of packets from EP8 IN, the
-// free-running isochronous counter. Real isochronous transfers have no
-// retries and no guarantee every microframe is serviced (USB 2.0 spec
-// section 5.6.4), and this firmware fills the endpoint from a plain polling
-// loop with no SOF synchronization, so individual packets legitimately see
-// non-success statuses (observed: kIOReturnOverrun early in a burst,
-// kIOReturnUnderrun later) -- this only checks that some real data comes
-// through overall, not that every packet is clean.
-func TestIsochronousCounter(t *testing.T) {
-	handle := openJig(t)
-
-	const numPackets = 8
-	const packetSize = 8
-
-	it, err := handle.IsochronousTransferIn(epIsoIn, numPackets, packetSize)
-	if err != nil {
-		t.Fatalf("IsochronousTransferIn: %v", err)
-	}
-	if err := it.Wait(); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	if it.ActualLength() == 0 {
-		t.Errorf("no isochronous data received across %d packets", numPackets)
-	}
-}
+// TestIsochronousCounter lives in isochronous_darwin_test.go and
+// isochronous_other_test.go: go-usb's real isochronous entry points differ
+// by platform today (macOS: IsochronousTransferIn/Out; Linux and Windows:
+// NewIsochronousTransfer, and Windows' is currently stubbed), so there is no
+// single portable call this file can make yet. See those files for why.
