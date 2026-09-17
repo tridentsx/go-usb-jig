@@ -7,3 +7,6 @@ firmware/*.lk
 firmware/*.map
 firmware/*.mem
 firmware/*.rst
+
+/flash
+/jig

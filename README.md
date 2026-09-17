@@ -20,6 +20,22 @@ The board used during development is a Cypress FX2/FX2LP dev board
 (`0925:3881`), the common default VID:PID for that chip's stock loader
 firmware — cheap and widely available.
 
+**Update, first real flash attempt (2026-09-17):** the actual board on hand
+turned out to be a cheap FX2-based USB logic analyzer clone (24MHz,
+8-channel, sealed plastic enclosure, no buttons or jumpers — instantly
+recognizable by that description). It boots real application firmware from
+an onboard EEPROM, not a bare bootloader, so the standard `0xA0`
+RAM-download vendor command (`cmd/flash`) is accepted at the USB protocol
+level but silently does nothing — confirmed by reading the device's own
+`GET_DESCRIPTOR` response directly afterward, still the original firmware.
+Installing `sigrok-cli`/`libsigrok` (which bundle the real, tested
+`fx2lafw` firmware for exactly this device class) and running
+`sigrok-cli --scan` DOES successfully load different firmware into RAM, so
+the `0xA0` mechanism itself works on this board — the gap is specifically
+in this repo's own firmware, not the loading mechanism. Next step is real
+bench debugging of `firmware/fx2regs.h`'s register values against the
+actual TRM, not another blind attempt.
+
 ## Endpoint map
 
 One interface, one alternate setting (deliberately simpler than the multi
