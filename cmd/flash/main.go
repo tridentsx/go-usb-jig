@@ -21,10 +21,40 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	usb "github.com/kevmo314/go-usb"
 )
+
+// fwChunkSize matches libsigrok's ezusb.c FW_CHUNKSIZE exactly, for parity
+// with the known-good loader this one is being cross-checked against.
+const fwChunkSize = 4 * 1024
+
+// parseRawBinary treats the whole file as one contiguous image starting at
+// address 0, chunked for the control transfer -- the format libsigrok's
+// ezusb_install_firmware uses for the .fw firmware images it bundles (as
+// opposed to sdcc's per-record-addressed Intel HEX output).
+func parseRawBinary(path string) ([]hexRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 1<<16 {
+		return nil, fmt.Errorf("firmware image is %d bytes, larger than the 64KiB a 16-bit address can reach", len(data))
+	}
+
+	var records []hexRecord
+	for offset := 0; offset < len(data); offset += fwChunkSize {
+		end := offset + fwChunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		records = append(records, hexRecord{address: uint16(offset), data: data[offset:end]})
+	}
+	return records, nil
+}
 
 const (
 	cpucsAddress = 0xE600
@@ -109,10 +139,16 @@ func vendorWrite(handle *usb.DeviceHandle, address uint16, data []byte) error {
 func main() {
 	vendorID := flag.Uint("vid", 0x0925, "USB vendor ID of the board to flash")
 	productID := flag.Uint("pid", 0x3881, "USB product ID of the board to flash")
-	path := flag.String("hex", "firmware/firmware.ihx", "path to the Intel HEX firmware image")
+	path := flag.String("hex", "firmware/firmware.ihx", "path to the firmware image (.ihx parsed as Intel HEX, anything else as a raw binary loaded from address 0)")
 	flag.Parse()
 
-	records, err := parseIntelHex(*path)
+	var records []hexRecord
+	var err error
+	if strings.EqualFold(filepath.Ext(*path), ".ihx") {
+		records, err = parseIntelHex(*path)
+	} else {
+		records, err = parseRawBinary(*path)
+	}
 	if err != nil {
 		log.Fatalf("parsing %s: %v", *path, err)
 	}

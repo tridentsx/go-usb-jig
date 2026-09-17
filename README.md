@@ -20,21 +20,32 @@ The board used during development is a Cypress FX2/FX2LP dev board
 (`0925:3881`), the common default VID:PID for that chip's stock loader
 firmware — cheap and widely available.
 
-**Update, first real flash attempt (2026-09-17):** the actual board on hand
+**Update, first real flash attempts (2026-09-17):** the actual board on hand
 turned out to be a cheap FX2-based USB logic analyzer clone (24MHz,
 8-channel, sealed plastic enclosure, no buttons or jumpers — instantly
 recognizable by that description). It boots real application firmware from
 an onboard EEPROM, not a bare bootloader, so the standard `0xA0`
 RAM-download vendor command (`cmd/flash`) is accepted at the USB protocol
-level but silently does nothing — confirmed by reading the device's own
-`GET_DESCRIPTOR` response directly afterward, still the original firmware.
-Installing `sigrok-cli`/`libsigrok` (which bundle the real, tested
-`fx2lafw` firmware for exactly this device class) and running
-`sigrok-cli --scan` DOES successfully load different firmware into RAM, so
-the `0xA0` mechanism itself works on this board — the gap is specifically
-in this repo's own firmware, not the loading mechanism. Next step is real
-bench debugging of `firmware/fx2regs.h`'s register values against the
-actual TRM, not another blind attempt.
+level but silently did nothing on the first attempt.
+
+`cmd/flash` was then cross-checked against known-good firmware to isolate
+whether the loader itself was at fault: loading two different real
+`fx2lafw` binaries (bundled with `libsigrok`, one via `cmd/flash`'s raw-binary
+path, one converted to Intel HEX and loaded via its `.ihx` path) both
+correctly changed the device's VID:PID to match whichever image was
+loaded (`04b4:8613` and `0925:3881` respectively, each with the matching
+product string). **The loader is proven correct, both code paths.**
+
+That isolates the bug entirely to this repo's own firmware — and to
+something sharper than "missing renumeration": a direct `GET_DESCRIPTOR`
+control transfer sent straight to the device after flashing our firmware
+never returned a single byte of our own descriptor table, even with the
+chip in a known-clean state beforehand. The most likely explanation is
+that `main()` hangs or crashes almost immediately, before it ever gets far
+enough to service any USB request — not that it runs but never announces
+itself. Next debugging step: bisect from a deliberately minimal firmware
+(touch nothing but the polling loop) up to the current one, rather than
+auditing the full register set against the TRM in one pass.
 
 ## Endpoint map
 
