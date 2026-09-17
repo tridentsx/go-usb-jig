@@ -139,6 +139,40 @@ error if it's attached but still running different firmware. Flash this
 repo's firmware first with `go run ./cmd/flash firmware/firmware.ihx`
 (build it with `cd firmware && make` if `firmware.ihx` isn't there yet).
 
+## Windows setup
+
+The board and its firmware are entirely platform-independent — the same
+`firmware.ihx` that's already flashed and verified against macOS works
+unchanged once the board is physically moved to a Windows machine.
+Two things are specific to Windows, though:
+
+1. **Bind WinUSB to the board with [Zadig](https://zadig.akeo.ie/).**
+   The board enumerates as a vendor-specific class device (`bDeviceClass
+   0xFF`, deliberately — see "Why this exists" above), so Windows has no
+   built-in class driver for it and `go-usb`'s Windows backend cannot open
+   it until some driver is bound. Run Zadig, select the device
+   (`0925:3881`), and install the WinUSB driver for it. This should only be
+   needed once: the firmware keeps the same VID:PID across reflashes, and
+   WinUSB's driver association is keyed on that, not on the exact
+   descriptor content. If Device Manager ever shows the board under a
+   different driver after a reflash, redo this step.
+2. **Building the firmware needs SDCC on Windows too, if you rebuild it.**
+   You almost certainly don't need to: `firmware.ihx` is compiled 8051
+   machine code with no dependency on the host platform that built it, so
+   copying the already-built file from wherever it was last built (and
+   flashing it with `go run ./cmd/flash firmware/firmware.ihx`, same as
+   everywhere else) is enough. Only install SDCC and run `cd firmware &&
+   make` on Windows if you're actually changing the firmware source itself.
+
+**Known gap:** `TestIsochronousCounter` currently skips on every platform
+but macOS (see `isochronous_other_test.go`), because `go-usb`'s Windows
+backend doesn't have a working isochronous transfer call yet — that's
+exactly the kind of gap this board exists to catch. Once that lands
+upstream, replace the skip in `isochronous_other_test.go` with a real test
+mirroring `isochronous_darwin_test.go`'s structure (submit against EP8 IN,
+wait, assert some real data came through — tolerant of individual packets
+reporting non-success status, since this firmware isn't SOF-synchronized).
+
 ## go.mod
 
 Depends on `github.com/kevmo314/go-usb`, replaced to point at a commit on
