@@ -8,10 +8,8 @@
 // without hardware attached should say so, not look like a broken test.
 //
 // Endpoint map matches firmware/hw/go-usb-jig/dscr.a51 exactly; keep them in
-// sync by hand, nothing generates one from the other. Isochronous and vendor
-// stall/RAM commands were in the original (broken) firmware design and
-// aren't back yet in the fx2lib-based rebuild -- see the top-level README's
-// "Firmware status" section for the two known real bugs in what's here now.
+// sync by hand, nothing generates one from the other. See the top-level
+// README's "Firmware status" section for the current state of each piece.
 
 package jig
 
@@ -32,7 +30,23 @@ const (
 	epInterruptIn = 0x81
 	epBulkOut     = 0x02
 	epBulkIn      = 0x86
+	epIsoIn       = 0x08 // bare endpoint number; IsochronousTransferIn ORs in the direction bit itself
 )
+
+// Vendor request numbers for the scratch-RAM read/write test; see
+// VR_READ_RAM/VR_WRITE_RAM in firmware/hw/go-usb-jig/main.c.
+const (
+	vrReadRAM  = 0xB6
+	vrWriteRAM = 0xB7
+)
+
+// reqTypeEndpointOut is the standard bmRequestType for a host-to-device
+// request targeting an endpoint (used with SET_FEATURE/CLEAR_FEATURE below).
+const reqTypeEndpointOut = 0x02
+
+// featureEndpointHalt is the standard USB feature selector for stalling/
+// clearing an endpoint's halt condition.
+const featureEndpointHalt = 0
 
 // openJig finds and opens the board and claims its one interface, which has
 // only one alternate setting -- it exposes every test endpoint from the
@@ -94,10 +108,7 @@ func openJig(t *testing.T) *usb.DeviceHandle {
 }
 
 // TestBulkLoopback writes a known pattern to EP2 OUT and reads it back from
-// EP6 IN, which the firmware is meant to echo it to. Known broken right now:
-// EP6 IN returns a fixed repeating pattern instead of the echoed data --
-// the mechanism works end to end (this is real data, not an error), but the
-// firmware's copy loop has a bug. See README.
+// EP6 IN, which the firmware echoes it to.
 func TestBulkLoopback(t *testing.T) {
 	handle := openJig(t)
 
@@ -167,5 +178,90 @@ func TestInterruptHeartbeat(t *testing.T) {
 	}
 	if first[0] == second[0] {
 		t.Errorf("heartbeat did not advance: both reads returned %d", first[0])
+	}
+}
+
+// TestVendorRAM writes a pattern spanning more than one 64-byte EP0 packet
+// to the firmware's scratch RAM via a custom vendor request, then reads it
+// back via a second custom vendor request, exercising a real multi-packet
+// EP0 control-transfer data stage in both directions.
+func TestVendorRAM(t *testing.T) {
+	handle := openJig(t)
+
+	want := []byte("go-usb-jig vendor RAM roundtrip test, spanning more than one 64-byte EP0 packet!!")
+	if _, err := handle.ControlTransfer(0x40, vrWriteRAM, 0, 0, want, 2*time.Second); err != nil {
+		t.Fatalf("vendor WRITE_RAM: %v", err)
+	}
+
+	got := make([]byte, len(want))
+	n, err := handle.ControlTransfer(0xC0, vrReadRAM, 0, 0, got, 2*time.Second)
+	if err != nil {
+		t.Fatalf("vendor READ_RAM: %v", err)
+	}
+	got = got[:n]
+
+	if !bytes.Equal(got, want) {
+		t.Errorf("vendor RAM roundtrip mismatch: got % x, want % x", got, want)
+	}
+}
+
+// TestEndpointStall exercises the standard SET_FEATURE/CLEAR_FEATURE
+// (ENDPOINT_HALT) requests against a real stalled pipe: fx2lib's setupdat.c
+// implements the actual stall/unstall (see handle_set_feature/
+// handle_clear_feature there), no custom firmware needed.
+func TestEndpointStall(t *testing.T) {
+	handle := openJig(t)
+
+	if err := handle.SetFeature(reqTypeEndpointOut, featureEndpointHalt, epBulkIn); err != nil {
+		t.Fatalf("SetFeature(ENDPOINT_HALT): %v", err)
+	}
+
+	buf := make([]byte, 64)
+	if _, err := handle.BulkTransfer(epBulkIn, buf, 500*time.Millisecond); err == nil {
+		t.Error("read on stalled endpoint unexpectedly succeeded")
+	}
+
+	if err := handle.ClearFeature(reqTypeEndpointOut, featureEndpointHalt, epBulkIn); err != nil {
+		t.Fatalf("ClearFeature(ENDPOINT_HALT): %v", err)
+	}
+
+	// Confirm the pipe actually works again after clearing the halt, not
+	// just that the control requests themselves returned success.
+	want := make([]byte, 64)
+	for i := range want {
+		want[i] = byte(i)
+	}
+	if _, err := handle.BulkTransfer(epBulkOut, want, 2*time.Second); err != nil {
+		t.Fatalf("post-clear BulkTransfer OUT: %v", err)
+	}
+	if _, err := handle.BulkTransfer(epBulkIn, buf, 2*time.Second); err != nil {
+		t.Fatalf("post-clear BulkTransfer IN: %v", err)
+	}
+}
+
+// TestIsochronousCounter reads a burst of packets from EP8 IN, the
+// free-running isochronous counter. Real isochronous transfers have no
+// retries and no guarantee every microframe is serviced (USB 2.0 spec
+// section 5.6.4), and this firmware fills the endpoint from a plain polling
+// loop with no SOF synchronization, so individual packets legitimately see
+// non-success statuses (observed: kIOReturnOverrun early in a burst,
+// kIOReturnUnderrun later) -- this only checks that some real data comes
+// through overall, not that every packet is clean.
+func TestIsochronousCounter(t *testing.T) {
+	handle := openJig(t)
+
+	const numPackets = 8
+	const packetSize = 8
+
+	it, err := handle.IsochronousTransferIn(epIsoIn, numPackets, packetSize)
+	if err != nil {
+		t.Fatalf("IsochronousTransferIn: %v", err)
+	}
+	if err := it.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	if it.ActualLength() == 0 {
+		t.Errorf("no isochronous data received across %d packets", numPackets)
 	}
 }

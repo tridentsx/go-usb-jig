@@ -11,9 +11,11 @@
  * is tested and shipped, not transcribed from memory.
  *
  * Endpoint map (see hw/go-usb-jig/dscr.a51): EP1 IN interrupt heartbeat,
- * EP2 OUT bulk loopback source, EP6 IN bulk echoes what EP2 OUT received.
- * Isochronous and vendor RAM/stall commands are deliberately left for a
- * follow-up once this baseline is confirmed on the bench.
+ * EP2 OUT bulk loopback source, EP6 IN bulk echoes what EP2 OUT received,
+ * EP8 IN isochronous free-running counter. Endpoint stall/clear-halt uses
+ * the standard SET_FEATURE/CLEAR_FEATURE(ENDPOINT_HALT) requests, already
+ * implemented by fx2lib's setupdat.c (see handle_set_feature/
+ * handle_clear_feature there) -- no firmware change needed for that here.
  */
 
 #include <fx2regs.h>
@@ -30,11 +32,40 @@
 volatile __bit got_sud;
 volatile WORD heartbeat_counter = 0;
 static BYTE heartbeat = 0;
+static BYTE isoCounter = 0;
+
+/* Vendor request numbers for the scratch-RAM read/write test. Chosen well
+ * clear of the standard request range (0-12) and of 0xA0 (EZ-USB's own
+ * built-in RAM download command, handled by the chip before firmware ever
+ * sees it) and 0xA1-0xAF (reserved alongside it per fx2lib's setupdat.h). */
+#define VR_READ_RAM  0xB6
+#define VR_WRITE_RAM 0xB7
+#define RAM_SIZE 256
+static __xdata BYTE scratch_ram[RAM_SIZE];
 
 BOOL handle_vendorcommand(BYTE cmd)
 {
-	(void)cmd;
-	return FALSE;
+	BYTE offset = SETUPDAT[2]; /* wValueL */
+	WORD count = SETUP_LENGTH();
+
+	/* offset is a BYTE (0-255) and RAM_SIZE is 256, so offset is always a
+	 * valid index; only the length needs clamping to stay in bounds. */
+	switch (cmd) {
+	case VR_READ_RAM:
+		if (count > (WORD)(RAM_SIZE - offset))
+			count = RAM_SIZE - offset;
+		writeep0(scratch_ram + offset, count);
+		return TRUE;
+
+	case VR_WRITE_RAM:
+		if (count > (WORD)(RAM_SIZE - offset))
+			count = RAM_SIZE - offset;
+		readep0(scratch_ram + offset, count);
+		return TRUE;
+
+	default:
+		return FALSE;
+	}
 }
 
 BOOL handle_get_interface(BYTE ifc, BYTE *alt_ifc)
@@ -50,12 +81,15 @@ BOOL handle_set_interface(BYTE ifc, BYTE alt_ifc)
 	if (ifc != 0 || alt_ifc != 0)
 		return FALSE;
 
-	/* Reset data toggles and FIFOs for the endpoints in this interface. */
+	/* Reset data toggles and FIFOs for the endpoints in this interface.
+	 * Isochronous endpoints don't use data toggling (TRM 5.4), so EP8 only
+	 * needs its FIFO reset, not RESETTOGGLE. */
 	RESETTOGGLE(0x81);
 	RESETTOGGLE(0x02);
 	RESETTOGGLE(0x86);
 	RESETFIFO(0x02);
 	RESETFIFO(0x06);
+	RESETFIFO(0x08);
 
 	return TRUE;
 }
@@ -109,14 +143,36 @@ static void setup_endpoints(void)
 	EP6CFG = bmVALID | bmDIR | bmBIT5 | bmBIT3;
 	SYNCDELAY();
 
-	/* EP4 and EP8 are unused. */
+	/* EP4 is unused. */
 	EP4CFG &= ~bmVALID;
 	SYNCDELAY();
-	EP8CFG &= ~bmVALID;
+
+	/* EP8 IN: isochronous. Per TRM 8.4, EP8 is always fixed at 512 bytes,
+	 * double-buffered -- it has no SIZE/BUF bits, only VALID/DIRECTION/
+	 * TYPE. TYPE=01 (bit4 set, bit5 clear) is isochronous, confirmed
+	 * against the real TRM's EPxCFG bit table (Section 8.4), not guessed
+	 * from the bulk/interrupt pattern above. */
+	EP8CFG = bmVALID | bmDIR | bmBIT4; /* TYPE=isochronous (01). */
+	SYNCDELAY();
+
+	/* One packet per microframe at high speed (TRM 8.6.2.2); this is
+	 * also the hardware default, but set it explicitly. Doesn't affect
+	 * full-speed operation, which is always fixed at one packet/frame. */
+	EP8ISOINPKTS = 1;
+	SYNCDELAY();
+
+	/* Disable AUTOIN (TRM 8.4/9.3.7): with it left at its uninitialized
+	 * reset state, the packet committed to the host was sized from
+	 * EP8AUTOINLENH:L instead of the EP8BCH:L write below, causing a
+	 * kIOReturnOverrun on every packet when the two disagreed. This
+	 * firmware commits packets manually via EP8BCL, exactly like EP1/EP6
+	 * below, so AUTOIN must be off. */
+	EP8FIFOCFG = 0;
 	SYNCDELAY();
 
 	RESETFIFO(0x02);
 	RESETFIFO(0x06);
+	RESETFIFO(0x08);
 }
 
 void main(void)
@@ -162,6 +218,17 @@ void main(void)
 			EP6BCL = count;
 			SYNCDELAY();
 			OUTPKTEND = 0x02 | 0x80; /* Free the EP2 OUT buffer we consumed. */
+		}
+
+		/* EP8 IN isochronous: send one byte whenever a buffer is free.
+		 * EP8 is double-buffered, so it uses the EP2468STAT FULL/EMPTY
+		 * check (like EP6 above), not a single BUSY bit (like EP1). */
+		if (!(EP2468STAT & bmEP8FULL)) {
+			EP8FIFOBUF[0] = isoCounter++;
+			SYNCDELAY();
+			EP8BCH = 0;
+			SYNCDELAY();
+			EP8BCL = 1;
 		}
 	}
 }

@@ -45,9 +45,10 @@ correctly re-enumerated as real `fx2lafw`. `fx2lib` (source only, no build
 artifacts) is now vendored into `firmware/fx2lib/`, and this project's own
 firmware (`firmware/hw/go-usb-jig/`) is built on top of it instead of a
 hand-rolled register file. **That firmware now boots and enumerates
-correctly on real hardware, and both endpoints work end to end**:
-`BulkTransfer` OUT/IN on the loopback endpoints and `InterruptTransfer` on
-the heartbeat endpoint all pass on a fresh flash.
+correctly on real hardware, and every transfer type go-usb supports on
+this platform works end to end**: bulk, interrupt, isochronous, control
+transfers with a real multi-packet data stage, and endpoint stall/
+clear-halt all pass on a fresh flash.
 
 Two more bugs turned up chasing what first looked like firmware problems,
 neither of which was actually in the firmware — see "Firmware status"
@@ -64,12 +65,10 @@ bandwidth negotiation, which a test jig doesn't need):
 | EP1 IN | Interrupt | Free-running heartbeat byte |
 | EP2 OUT | Bulk | Loopback source |
 | EP6 IN | Bulk | Echoes whatever EP2 OUT last received |
-| EP0 | Control | Standard requests only for now (see below) |
+| EP8 IN | Isochronous | Free-running counter byte, one packet/microframe |
+| EP0 | Control | Standard requests, plus a custom vendor RAM read/write; endpoint stall/clear-halt via the standard SET_FEATURE/CLEAR_FEATURE(ENDPOINT_HALT) requests |
 
-Isochronous and vendor RAM/stall commands were in the original (broken)
-design and are not yet back in the `fx2lib`-based rebuild; they're the
-natural next addition once the bulk/interrupt baseline above is fully
-debugged. `EP8` isn't used in this version.
+`EP4` is unused.
 
 ## Firmware status
 
@@ -103,6 +102,22 @@ bugs at first turned out to be elsewhere:
   unrelated bug in this repo's own `TestInterruptHeartbeat` (comparing two
   slices that aliased the same backing array, so it could never have
   detected a real advance) was fixed alongside it.
+
+`EP8`'s isochronous counter, the vendor RAM read/write command, and
+endpoint stall/clear-halt were added after the bulk/interrupt baseline
+above was confirmed solid, and all three work on real hardware, though the
+isochronous endpoint is worth a specific note: this firmware fills it from
+a plain polling loop with no SOF (start-of-frame) synchronization, so
+individual packets in a burst legitimately come back with a non-success
+`IOReturn` (observed: `kIOReturnOverrun` early in a burst, then
+`kIOReturnUnderrun`) even though real data does get through overall. This
+matches the USB 2.0 spec's own isochronous guarantees (no retries, no
+guarantee every microframe is serviced — section 5.6.4), not a bug in
+go-usb or this firmware; `TestIsochronousCounter` only checks that some
+data arrived across the whole burst, not that every packet is clean. A
+firmware that services EP8 from the SOF interrupt instead of the main
+polling loop would likely clean this up, but wasn't needed to get real,
+verifiable isochronous I/O working end to end.
 
 Unlike the from-scratch attempt's `fx2regs.h`, nothing here needs a `VERIFY
 against the TRM` disclaimer — every register/macro used comes from

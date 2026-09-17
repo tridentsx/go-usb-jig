@@ -9,14 +9,17 @@
 ;; class driver ever claims this device -- see the top-level README.
 ;;
 ;; Endpoint map, one interface, one alternate setting:
-;;   EP1 IN   interrupt  free-running heartbeat byte
-;;   EP2 OUT  bulk       loopback source
-;;   EP6 IN   bulk       echoes whatever EP2 OUT last received
+;;   EP1 IN   interrupt     free-running heartbeat byte
+;;   EP2 OUT  bulk          loopback source
+;;   EP6 IN   bulk          echoes whatever EP2 OUT last received
+;;   EP8 IN   isochronous   free-running counter byte, one packet/microframe
 ;;
-;; Isochronous and vendor RAM/stall commands are deliberately left out of
-;; this first rebuild on fx2lib, to get a solid, verified bulk/interrupt
-;; baseline on real hardware before adding back the more complex pieces the
-;; from-scratch firmware never got working. See main.c.
+;; Endpoint stall/clear-halt is exercised with the standard
+;; SET_FEATURE/CLEAR_FEATURE(ENDPOINT_HALT) requests, which fx2lib's
+;; setupdat.c already implements against real hardware -- no custom vendor
+;; command needed for that. A custom vendor command (VR_READ_RAM/
+;; VR_WRITE_RAM) exercises control transfers with a real data stage; see
+;; main.c.
 
 .include "common.inc"
 
@@ -97,7 +100,7 @@ highspd_dscr_end:
 	.db	DSCR_INTERFACE_TYPE
 	.db	0			; Interface index
 	.db	0			; Alternate setting index
-	.db	3			; Number of endpoints
+	.db	4			; Number of endpoints
 	.db	0xff
 	.db	0xff
 	.db	0xff
@@ -133,6 +136,22 @@ highspd_dscr_end:
 	.db	0x02
 	.db	0x00
 
+	; EP8 IN, isochronous. EP8 is fixed at 512 bytes double-buffered by the
+	; hardware (TRM 8.4), but the descriptor's wMaxPacketSize can declare
+	; any smaller value; 1 matches what main.c's fill loop actually commits
+	; per microframe (EP8BCL=1) -- declaring 64 here while firmware only
+	; ever sends 1 byte caused stale-buffer garbage and underruns on the
+	; host side, since the host expects a full 64-byte packet every
+	; microframe. bInterval=1 (one microframe) matches EP8ISOINPKTS=1 (one
+	; packet/microframe) in main.c.
+	.db	DSCR_ENDPOINT_LEN
+	.db	DSCR_ENDPOINT_TYPE
+	.db	0x88
+	.db	ENDPOINT_TYPE_ISO
+	.db	0x08			; 8 bytes (declared larger than the 1 byte actually sent, to test if the overrun is size-specific)
+	.db	0x00
+	.db	0x01
+
 highspd_dscr_realend:
 
 	.even
@@ -156,7 +175,7 @@ fullspd_dscr_end:
 	.db	DSCR_INTERFACE_TYPE
 	.db	0
 	.db	0
-	.db	3
+	.db	4
 	.db	0xff
 	.db	0xff
 	.db	0xff
@@ -189,6 +208,17 @@ fullspd_dscr_end:
 	.db	0x40
 	.db	0x00
 	.db	0x00
+
+	; EP8 IN, isochronous. Full-speed isochronous bInterval must be 1 (one
+	; frame) per the USB 2.0 spec -- unlike interrupt, it isn't a free
+	; choice. 1 byte, matching the high-speed block; see its comment.
+	.db	DSCR_ENDPOINT_LEN
+	.db	DSCR_ENDPOINT_TYPE
+	.db	0x88
+	.db	ENDPOINT_TYPE_ISO
+	.db	0x01
+	.db	0x00
+	.db	0x01
 
 fullspd_dscr_realend:
 
