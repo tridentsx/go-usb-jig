@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	usb "github.com/kevmo314/go-usb"
+	usb "github.com/tridentsx/go-usb"
 )
 
 // fwChunkSize matches libsigrok's ezusb.c FW_CHUNKSIZE exactly, for parity

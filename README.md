@@ -1,6 +1,7 @@
 # go-usb-jig
 
-A hardware test jig for [go-usb](https://github.com/kevmo314/go-usb): FX2
+A hardware test jig for [go-usb](https://github.com/tridentsx/go-usb) (a
+full fork of [kevmo314/go-usb](https://github.com/kevmo314/go-usb)): FX2
 firmware plus hardware-gated Go tests, exercising bulk, interrupt,
 isochronous and vendor control transfers against real USB hardware that
 no operating system's built-in class driver will claim.
@@ -211,7 +212,7 @@ reporting non-success status, since this firmware isn't SOF-synchronized).
 
 ## go.mod
 
-Depends on `github.com/kevmo314/go-usb`, replaced to point at a commit on
-[tridentsx/go-usb](https://github.com/tridentsx/go-usb)'s `darwin/async-bulk`
-branch until PRs #18–#22 merge upstream. Update the `replace` directive (or
-remove it) once they do.
+Depends directly on [tridentsx/go-usb](https://github.com/tridentsx/go-usb)
+— a full fork of `kevmo314/go-usb`, not a fork-with-a-`replace`-directive
+waiting for PRs to land upstream. No `replace` directive needed anymore:
+the module path itself is `github.com/tridentsx/go-usb`.
