@@ -34,14 +34,70 @@ volatile WORD heartbeat_counter = 0;
 static BYTE heartbeat = 0;
 static BYTE isoCounter = 0;
 
+/* Debug counters for diagnosing the real bulk-transfer timeout seen from
+ * both macOS (IOKit) and Windows (WinUSB): incremented in the main loop, so
+ * a host can ask "did the device's own USB engine ever actually see
+ * anything land in EP2 OUT" independent of whatever the host-side transfer
+ * call reported. If this stays at 0 across a failed WritePipe attempt, the
+ * device-side SIE never saw the OUT token at all, which points away from
+ * firmware (the main loop can't be blamed for consuming something that
+ * never arrived) and toward the physical link (hub, cable, hardware). If it
+ * increments, the device did see the data and the failure is in how/
+ * whether that success gets communicated back to the host.
+ */
+static WORD ep2_seen_count = 0;
+static WORD ep6_committed_count = 0;
+
 /* Vendor request numbers for the scratch-RAM read/write test. Chosen well
  * clear of the standard request range (0-12) and of 0xA0 (EZ-USB's own
  * built-in RAM download command, handled by the chip before firmware ever
  * sees it) and 0xA1-0xAF (reserved alongside it per fx2lib's setupdat.h). */
 #define VR_READ_RAM  0xB6
 #define VR_WRITE_RAM 0xB7
+
+/* VR_READ_REGS: live register/counter snapshot for diagnosing the bulk
+ * timeout. IN, no data stage input -- see reg_snapshot below for the
+ * layout. Chosen well clear of VR_READ_RAM/VR_WRITE_RAM and the reserved
+ * ranges noted above. */
+#define VR_READ_REGS 0xB8
+
 #define RAM_SIZE 256
 static __xdata BYTE scratch_ram[RAM_SIZE];
+
+/* reg_snapshot is what VR_READ_REGS returns, built fresh on every request
+ * rather than kept live, since EP2CS/EP6CS/EP2468STAT/EP2FIFOFLGS/
+ * EP6FIFOFLGS need reading at the moment of the request, not cached. Field
+ * order and meaning (see fx2regs.h for the real bit names):
+ *   [0]   EP2CS       bmNPAK (6:4), bmEPFULL (3), bmEPEMPTY (2), bmEPSTALL (0)
+ *   [1]   EP6CS       same bit layout as EP2CS
+ *   [2]   EP2468STAT  bmEP2FULL/EMPTY (1:0), bmEP6FULL/EMPTY (5:4)
+ *   [3]   EP2CFG
+ *   [4]   EP6CFG
+ *   [5]   USBCS
+ *   [6]   EP2FIFOFLGS
+ *   [7]   EP6FIFOFLGS
+ *   [8:9] ep2_seen_count, low byte first (how many times the main loop has
+ *         seen EP2468STAT report EP2 non-empty, i.e. real data arrived)
+ *   [10:11] ep6_committed_count, low byte first (how many times the main
+ *         loop has committed a copied packet to EP6 IN)
+ */
+static __xdata BYTE reg_snapshot[12];
+
+static void fill_reg_snapshot(void)
+{
+	reg_snapshot[0] = EP2CS;
+	reg_snapshot[1] = EP6CS;
+	reg_snapshot[2] = EP2468STAT;
+	reg_snapshot[3] = EP2CFG;
+	reg_snapshot[4] = EP6CFG;
+	reg_snapshot[5] = USBCS;
+	reg_snapshot[6] = EP2FIFOFLGS;
+	reg_snapshot[7] = EP6FIFOFLGS;
+	reg_snapshot[8] = (BYTE)(ep2_seen_count & 0xff);
+	reg_snapshot[9] = (BYTE)(ep2_seen_count >> 8);
+	reg_snapshot[10] = (BYTE)(ep6_committed_count & 0xff);
+	reg_snapshot[11] = (BYTE)(ep6_committed_count >> 8);
+}
 
 BOOL handle_vendorcommand(BYTE cmd)
 {
@@ -61,6 +117,13 @@ BOOL handle_vendorcommand(BYTE cmd)
 		if (count > (WORD)(RAM_SIZE - offset))
 			count = RAM_SIZE - offset;
 		readep0(scratch_ram + offset, count);
+		return TRUE;
+
+	case VR_READ_REGS:
+		fill_reg_snapshot();
+		if (count > sizeof(reg_snapshot))
+			count = sizeof(reg_snapshot);
+		writeep0(reg_snapshot, count);
 		return TRUE;
 
 	default:
@@ -208,16 +271,21 @@ void main(void)
 		/* Bulk loopback: if EP2 OUT has data and EP6 IN is free, copy it
 		 * across. EP2468STAT's bits report each endpoint's empty/full
 		 * state; see fx2regs.h. */
-		if (!(EP2468STAT & bmEP2EMPTY) && !(EP2468STAT & bmEP6FULL)) {
-			BYTE i, count = EP2BCL;
-			for (i = 0; i < count; i++)
-				EP6FIFOBUF[i] = EP2FIFOBUF[i];
-			SYNCDELAY();
-			EP6BCH = 0;
-			SYNCDELAY();
-			EP6BCL = count;
-			SYNCDELAY();
-			OUTPKTEND = 0x02 | 0x80; /* Free the EP2 OUT buffer we consumed. */
+		if (!(EP2468STAT & bmEP2EMPTY)) {
+			ep2_seen_count++;
+
+			if (!(EP2468STAT & bmEP6FULL)) {
+				BYTE i, count = EP2BCL;
+				for (i = 0; i < count; i++)
+					EP6FIFOBUF[i] = EP2FIFOBUF[i];
+				SYNCDELAY();
+				EP6BCH = 0;
+				SYNCDELAY();
+				EP6BCL = count;
+				SYNCDELAY();
+				OUTPKTEND = 0x02 | 0x80; /* Free the EP2 OUT buffer we consumed. */
+				ep6_committed_count++;
+			}
 		}
 
 		/* EP8 IN isochronous: send one byte whenever a buffer is free.
