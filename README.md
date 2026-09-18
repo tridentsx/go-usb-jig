@@ -244,6 +244,17 @@ turned out not to be this repo's or go-usb's to fix.**
   further. `InterruptTransfer` on interface 0 (the plain
   `IOUSBInterfaceInterface` path, not IOHIDDevice) is unaffected —
   `TestInterruptHeartbeat` passes.
+- **One real lead tested and ruled out**: Infineon/Cypress's own AN64020
+  reference HID firmware (a composite mouse+keyboard demo on this same chip
+  family, genuinely polled continuously by real OS HID stacks) commits a
+  new IN packet only when the report actually changes, leaving the endpoint
+  idle the rest of the time — unlike this firmware's original EP4 loop,
+  which unconditionally refilled all 4 quad-buffer slots with fresh data on
+  every single main-loop pass. Rate-limited EP4's fill to roughly once per
+  65536 loop passes to match that pattern and re-flashed against the real
+  board: `GetInputReport` confirmed the slower rate took effect (advancing
+  by 1 per poll instead of ~19), but `TestHIDInputCounter` still fails
+  identically. Packet-flooding/quad-buffer racing is not the cause either.
 - `GET_IDLE`/`SET_IDLE`/`GET_PROTOCOL`/`SET_PROTOCOL` are not implemented —
   they stall, which is spec-compliant for a non-boot-protocol HID device.
   The real host stack (macOS, in this session) tolerated that stall fine:

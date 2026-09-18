@@ -42,6 +42,7 @@ static BYTE isoCounter = 0;
 #define HID_INTERFACE_NUM 1
 
 static BYTE hid_input_counter = 0;
+static WORD hid_fill_gate = 0;
 static __xdata BYTE hid_output_report[8];
 static __xdata BYTE hid_feature_report[8];
 
@@ -515,8 +516,21 @@ void main(void)
 		 * the first data byte -- InterruptTransfer on the host side
 		 * should see this incrementing across repeated reads, the same
 		 * kind of liveness check the EP1/EP8 counters give the other
-		 * transfer types. */
-		if (!(EP2468STAT & bmEP4FULL)) {
+		 * transfer types.
+		 *
+		 * Rate-limited (roughly every ~65536 main-loop passes) rather than
+		 * committing a fresh packet on every single pass: Infineon/Cypress's
+		 * own reference HID firmware (AN64020, a composite mouse+keyboard
+		 * demo on this same chip family, genuinely polled continuously by
+		 * real OS HID stacks) commits a new IN packet only when the report
+		 * actually changes, leaving the endpoint empty the rest of the time
+		 * for the SIE to NAK normally -- it never floods all 4 quad-buffer
+		 * slots with back-to-back fresh data the way the unconditional
+		 * version here did. Testing whether that difference matters for
+		 * the kernel's own continuous interrupt-pipe polling, as opposed to
+		 * a single explicit synchronous request, which already worked
+		 * either way. */
+		if (!(EP2468STAT & bmEP4FULL) && hid_fill_gate == 0) {
 			BYTE i;
 			EP4FIFOBUF[0] = 1; /* Report ID */
 			EP4FIFOBUF[1] = hid_input_counter++;
@@ -527,5 +541,6 @@ void main(void)
 			SYNCDELAY();
 			EP4BCL = 9;
 		}
+		hid_fill_gate++;
 	}
 }
