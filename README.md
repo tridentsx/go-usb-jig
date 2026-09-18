@@ -229,32 +229,27 @@ turned out not to be this repo's or go-usb's to fix.**
   `SetFeatureReport`/`GetFeatureReport`/`SetOutputReport`/`FlushHIDQueue`
   round-trips through go-usb's macOS `IOHIDDevice` backend, confirmed
   working end to end.
-- `TestHIDInputCounter` (the async `InterruptTransfer` path) still fails:
-  `IOHIDDeviceRegisterInputReportCallback`'s callback never fires, even
-  though `GetInputReport`'s synchronous poll on the identical device
-  returns live, changing data reliably. Investigated at length on go-usb's
-  side (see `hid_darwin.go`'s `startInputPump` comment) — a real,
-  independently-necessary bug (a GC-unsafe pointer) was found and fixed
-  there, but did not resolve this. The decisive result: an independent,
-  already-shipping purego HID library (`github.com/go-macos/iokit`), using
-  a different device-discovery approach, exhibited the identical symptom
-  against this exact board. That points away from a go-usb bug and toward
-  either this specific FX2LP firmware's EP4 interrupt endpoint or this
-  particular Mac's kernel-level HID interrupt polling — not yet isolated
-  further. `InterruptTransfer` on interface 0 (the plain
-  `IOUSBInterfaceInterface` path, not IOHIDDevice) is unaffected —
-  `TestInterruptHeartbeat` passes.
-- **One real lead tested and ruled out**: Infineon/Cypress's own AN64020
-  reference HID firmware (a composite mouse+keyboard demo on this same chip
-  family, genuinely polled continuously by real OS HID stacks) commits a
-  new IN packet only when the report actually changes, leaving the endpoint
-  idle the rest of the time — unlike this firmware's original EP4 loop,
-  which unconditionally refilled all 4 quad-buffer slots with fresh data on
-  every single main-loop pass. Rate-limited EP4's fill to roughly once per
-  65536 loop passes to match that pattern and re-flashed against the real
-  board: `GetInputReport` confirmed the slower rate took effect (advancing
-  by 1 per poll instead of ~19), but `TestHIDInputCounter` still fails
-  identically. Packet-flooding/quad-buffer racing is not the cause either.
+- `TestHIDInputCounter` (the async `InterruptTransfer` path) fails on this
+  one board — **closed as not a go-usb bug**, with real, direct evidence:
+  `IOHIDDeviceRegisterInputReportCallback` never fires for this device, but
+  `GetInputReport`'s synchronous poll on the identical device returns live,
+  changing data reliably. Two leads were investigated and fixed/ruled out
+  on the way (a real, independently-necessary GC-unsafe-pointer bug in
+  go-usb's pump, fixed regardless; packet-flooding in this firmware's EP4
+  fill loop, rate-limited to match Infineon/Cypress's own AN64020 reference
+  HID firmware and re-verified with no change in outcome). The closing
+  test: the exact same `IOHIDDeviceRegisterInputReportCallback`/
+  `IOHIDDeviceScheduleWithRunLoop` mechanism, called against several
+  *other* real vendor-page HID devices already present on this Mac
+  (including a real USB device, not just internal ones), delivered
+  reports successfully every time. The mechanism is proven working on this
+  machine; only this one board doesn't get delivery. `ioreg` confirms this
+  board sits behind a USB2.0 hub, unlike the devices that did work — the
+  most likely remaining explanation, untested for lack of a direct cable
+  during this session. Revisit if a direct connection is ever tried.
+  `InterruptTransfer` on interface 0 (the plain `IOUSBInterfaceInterface`
+  path, not IOHIDDevice) is unaffected either way — `TestInterruptHeartbeat`
+  passes.
 - `GET_IDLE`/`SET_IDLE`/`GET_PROTOCOL`/`SET_PROTOCOL` are not implemented —
   they stall, which is spec-compliant for a non-boot-protocol HID device.
   The real host stack (macOS, in this session) tolerated that stall fine:
