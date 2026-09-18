@@ -1,6 +1,4 @@
-github.com/ebitengine/purego v0.11.0 h1:jhp/D+Nyv7UUW8HAcmcjt2N2rYrYi9m3SL21k0Ua/NI=
-github.com/ebitengine/purego v0.11.0/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
-github.com/tridentsx/go-usb v0.0.0-20260917203134-0e97d69a4de3 h1:i1yvzi79js50WKKJG6nKKKs98sj8KYBBOvs2vSmUaxA=
-github.com/tridentsx/go-usb v0.0.0-20260917203134-0e97d69a4de3/go.mod h1:wnXi8fITX1CNuFpoNDFAHHgwQ2LN5VciDXQbPJH8s3Q=
+github.com/tridentsx/go-usb v0.0.0-20260918074421-298af74c1006 h1:lrni+MKYuwAbRUF50AQX/zaV2MVNhpPm0T6yc20h+LU=
+github.com/tridentsx/go-usb v0.0.0-20260918074421-298af74c1006/go.mod h1:Z+CyR6gVB+NHPwNPUx96N/iv8bEVqNR9c2POjQGfgDA=
 golang.org/x/sys v0.40.0 h1:DBZZqJ2Rkml6QMQsZywtnjnnGvHza6BTfYFWY9kjEWQ=
 golang.org/x/sys v0.40.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
