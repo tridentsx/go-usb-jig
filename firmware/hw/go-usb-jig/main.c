@@ -281,6 +281,27 @@ static void setup_endpoints(void)
 	RESETFIFO(0x02);
 	RESETFIFO(0x06);
 	RESETFIFO(0x08);
+
+	/* Drain any packets left stuck in EP2 OUT's quad buffer from a
+	 * previous firmware run. RESETFIFO above only resets FIFO pointers --
+	 * it does not clear the SIE's count of already-accepted, unconsumed
+	 * packets (confirmed on real hardware: EP2CS kept reporting NPAK=4/
+	 * FULL immediately after RESETFIFO). Only a real power cycle resets
+	 * that SIE-level state on its own; a software reflash (cmd/flash's
+	 * 0xA0 command) does not, since it only halts and reloads the 8051
+	 * CPU. Discarding via OUTPKTEND, the same mechanism VR_RESET_BULK
+	 * uses on demand, is what actually clears it, so do it unconditionally
+	 * on every boot rather than relying on the host to notice and ask. */
+	{
+		BYTE drain;
+		for (drain = 0; drain < 4; drain++) {
+			OUTPKTEND = 0x02 | 0x80;
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+		}
+	}
 }
 
 void main(void)
@@ -329,6 +350,19 @@ void main(void)
 				EP6BCL = count;
 				SYNCDELAY();
 				OUTPKTEND = 0x02 | 0x80; /* Free the EP2 OUT buffer we consumed. */
+				/* Let OUTPKTEND settle before the next iteration re-reads
+				 * EP2468STAT: VR_RESET_BULK's drain loop already waits four
+				 * SYNCDELAYs after each OUTPKTEND for exactly this reason.
+				 * Without it here, ep2_seen_count/ep6_committed_count were
+				 * observed to over-count a single host write (e.g. 3
+				 * instead of 1), consistent with EP2468STAT's EP2EMPTY bit
+				 * not yet reflecting the just-freed buffer on the very next
+				 * loop pass, so the same packet's now-stale FIFO contents
+				 * get copied and committed again. */
+				SYNCDELAY();
+				SYNCDELAY();
+				SYNCDELAY();
+				SYNCDELAY();
 				ep6_committed_count++;
 			}
 		}

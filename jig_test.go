@@ -224,6 +224,16 @@ func TestEndpointStall(t *testing.T) {
 		t.Fatalf("ClearFeature(ENDPOINT_HALT): %v", err)
 	}
 
+	// ClearFeature only clears the device's own halt condition. The host-side
+	// WinUSB/libusb pipe object tracks halt state independently (this is
+	// exactly what libusb_clear_halt bundles automatically), so the pipe
+	// also needs an explicit reset here or it can keep refusing transfers on
+	// a pipe it still believes is halted, regardless of what the device now
+	// reports.
+	if err := handle.ClearHalt(epBulkIn); err != nil {
+		t.Fatalf("ClearHalt: %v", err)
+	}
+
 	// Confirm the pipe actually works again after clearing the halt, not
 	// just that the control requests themselves returned success.
 	want := make([]byte, 64)
