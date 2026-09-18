@@ -187,46 +187,67 @@ against the TRM` disclaimer — every register/macro used comes from
 `sigrok-firmware-fx2lafw`'s own `fx2lafw.c` (also fetched via `git clone`,
 not paraphrased) for usage patterns.
 
-**Interface 1 (HID) is new and, unlike everything above, not yet verified
-against real hardware.** It was added to validate go-usb's HID transport
+**Interface 1 (HID) is new, added to validate go-usb's HID transport
 (particularly the new macOS `IOHIDDevice` backend) since no real
-off-the-shelf HID instrument was available. What's actually been checked:
+off-the-shelf HID instrument was available. Verified against a real,
+freshly-flashed board — three of four `hid_test.go` tests pass; the fourth
+surfaced a real bug, fixed, and then a separate, unresolved issue that
+turned out not to be this repo's or go-usb's to fix.**
 
-- The firmware (descriptors in `dscr.a51`, `main.c`'s HID request handling)
-  builds cleanly with `make`, with no new warnings beyond the pre-existing
-  ones already present in vendored `fx2lib` code.
 - The byte layout was checked by hand against the assembler's own listing
-  output (`dscr.lst`): the config descriptor's `wTotalLength`, the HID
-  descriptor's `wDescriptorLength`, and the standalone Report descriptor's
-  length all come out exactly as intended.
-- A real, working bug was caught and fixed this way, not by running on
-  hardware: `.dw`'s literal needs to be pre-swapped to get correct
+  output (`dscr.lst`) before ever touching hardware, catching one real bug
+  early: `.dw`'s literal needs to be pre-swapped to get correct
   little-endian wire bytes (see `VID`/`PID`'s existing comment in
   `dscr.a51`) — `bcdHID` was first written as `0x0111` (the real value) and
-  had to be corrected to `0x1101` (byte-swapped) once the listing showed it
-  would otherwise emit the wrong wire bytes.
-- **fx2lib's `setupdat.c` needed a real, deliberate patch** (not just
-  firmware in this repo's own files): its `handle_get_descriptor` has no
-  case for the HID Report descriptor type (`0x22`) and no override hook, so
-  a case for it was added directly to the vendored file, alongside a
-  comment explaining why. `handle_setupdata` also dispatches purely on
-  `bRequest` without checking `bmRequestType` first, which matters here
-  because `SET_REPORT` (`0x09`) numerically collides with the standard
-  `SET_CONFIGURATION` request — `main.c`'s `handle_set_configuration` now
-  checks `bmRequestType`/`wIndex` itself to catch this before falling
-  through to the real configuration-set logic; `GET_REPORT` (`0x01`)
-  collides with `CLEAR_FEATURE` instead, but that handler already falls
-  through to `handle_vendorcommand` for anything it doesn't recognize, so
-  no `setupdat.c` change was needed for that half.
+  had to be corrected to `0x1101`.
+- **A second, real firmware bug only showed up on real hardware**: fetching
+  the HID Report descriptor (`GET_DESCRIPTOR`, type `0x22`) always came
+  back truncated to exactly 6 bytes, regardless of the length requested.
+  Root cause, confirmed by temporarily pointing the same code path at
+  `dev_dscr` and watching it correctly serve `min(wLength, 18)`: EZ-USB's
+  SIE auto-descriptor hardware serves `min(wLength, the byte AT the SUDPTR
+  address)` for every descriptor type *except* CONFIGURATION (which uses
+  `wTotalLength` from bytes 2:3 instead) — and a HID Report descriptor has
+  no such self-describing length byte at all; byte 0 here is just the first
+  report item's tag (`0x06`), which is exactly what got served. Fixed by
+  serving it through `writeep0` (explicit byte count) instead of the
+  `SUDPTRH`/`SUDPTRL` autopointer, the same mechanism this repo's own
+  `VR_READ_RAM` vendor command already uses for the identical reason.
+  Needed a real, deliberate patch to vendored `fx2lib/lib/setupdat.c`, not
+  just this repo's own files: its `handle_get_descriptor` has no case for
+  the HID Report descriptor type and no override hook. `handle_setupdata`
+  also dispatches purely on `bRequest` without checking `bmRequestType`
+  first, which matters here because `SET_REPORT` (`0x09`) numerically
+  collides with the standard `SET_CONFIGURATION` request — `main.c`'s
+  `handle_set_configuration` now checks `bmRequestType`/`wIndex` itself to
+  catch this before falling through to the real configuration-set logic;
+  `GET_REPORT` (`0x01`) collides with `CLEAR_FEATURE` instead, but that
+  handler already falls through to `handle_vendorcommand` for anything it
+  doesn't recognize, so no `setupdat.c` change was needed for that half.
+- With both fixed, `TestHIDFeatureReportRoundTrip`, `TestHIDOutputReport`
+  and `TestHIDFlushQueue` all pass against the real board — real
+  `SetFeatureReport`/`GetFeatureReport`/`SetOutputReport`/`FlushHIDQueue`
+  round-trips through go-usb's macOS `IOHIDDevice` backend, confirmed
+  working end to end.
+- `TestHIDInputCounter` (the async `InterruptTransfer` path) still fails:
+  `IOHIDDeviceRegisterInputReportCallback`'s callback never fires, even
+  though `GetInputReport`'s synchronous poll on the identical device
+  returns live, changing data reliably. Investigated at length on go-usb's
+  side (see `hid_darwin.go`'s `startInputPump` comment) — a real,
+  independently-necessary bug (a GC-unsafe pointer) was found and fixed
+  there, but did not resolve this. The decisive result: an independent,
+  already-shipping purego HID library (`github.com/go-macos/iokit`), using
+  a different device-discovery approach, exhibited the identical symptom
+  against this exact board. That points away from a go-usb bug and toward
+  either this specific FX2LP firmware's EP4 interrupt endpoint or this
+  particular Mac's kernel-level HID interrupt polling — not yet isolated
+  further. `InterruptTransfer` on interface 0 (the plain
+  `IOUSBInterfaceInterface` path, not IOHIDDevice) is unaffected —
+  `TestInterruptHeartbeat` passes.
 - `GET_IDLE`/`SET_IDLE`/`GET_PROTOCOL`/`SET_PROTOCOL` are not implemented —
-  they stall, which is spec-compliant for a non-boot-protocol HID device
-  and how plenty of real minimal HID firmware behaves, but this hasn't been
-  confirmed against a real HID host stack actually tolerating that stall on
-  this exact board.
-- **Not done**: flashing this onto the real board and running
-  `hid_test.go`'s tests (`-tags jig`, darwin/windows only — see its own
-  header comment) against it. Whoever flashes this next should run those
-  and update this note either way.
+  they stall, which is spec-compliant for a non-boot-protocol HID device.
+  The real host stack (macOS, in this session) tolerated that stall fine:
+  enumeration succeeded and every other HID call worked.
 
 ## Running the tests
 

@@ -284,6 +284,7 @@ extern __code WORD dev_strings;
  * directly to the concrete function below with no override hook. See
  * dscr.a51's hid_report_dscr and the top-level go-usb-jig README. */
 extern __code WORD hid_report_dscr;
+extern __code WORD hid_report_dscr_end;
 #define DSCR_HID_REPORT_TYPE 0x22
 
 WORD pDevConfig = (WORD)&fullspd_dscr;
@@ -376,9 +377,28 @@ void handle_get_descriptor(void) {
              * already fetched rather than requesting separately, so no
              * case for 0x21 is needed here; the config descriptor bytes are
              * the only copy that exists (dscr.a51 embeds it there, once per
-             * speed, and does not duplicate it as a freestanding table). */
-            SUDPTRH = MSB((WORD)&hid_report_dscr);
-            SUDPTRL = LSB((WORD)&hid_report_dscr);
+             * speed, and does not duplicate it as a freestanding table).
+             *
+             * Deliberately NOT SUDPTRH/L like every other case here: EZ-USB's
+             * SIE auto-descriptor hardware serves min(wLength, the byte AT
+             * the SUDPTR address) for every descriptor type except
+             * CONFIGURATION (which uses wTotalLength from bytes 2:3
+             * instead) -- confirmed on real hardware, by pointing this exact
+             * case at dev_dscr (bLength 18) and observing it correctly served
+             * min(wLength, 18), then reverting. A HID Report descriptor has
+             * no such self-describing length byte at all (byte 0 here is
+             * just the first item's tag, 0x06), so the hardware truncated
+             * every request to a nonsensical "6" -- coincidentally that tag
+             * byte's own value. writeep0, already used by go-usb-jig's own
+             * vendor commands for the exact same reason, drives EP0BCH/L
+             * explicitly instead and sidesteps the auto mechanism entirely. */
+            {
+                WORD len = (WORD)&hid_report_dscr_end - (WORD)&hid_report_dscr;
+                WORD wanted = SETUP_LENGTH();
+                if (wanted < len)
+                    len = wanted;
+                writeep0((BYTE*)&hid_report_dscr, len);
+            }
             break;
         default:
             printf ( "Unhandled Get Descriptor: %02x\n", SETUPDAT[3]);

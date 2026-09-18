@@ -54,7 +54,7 @@ VID = 0x2509	; idVendor 0x0925 (Lakeview Research), byte-swapped for .dw
 PID = 0x8138	; idProduct 0x3881, byte-swapped for .dw
 
 .globl _dev_dscr, _dev_qual_dscr, _highspd_dscr, _fullspd_dscr, _dev_strings, _dev_strings_end
-.globl _hid_report_dscr
+.globl _hid_report_dscr, _hid_report_dscr_end
 .area DSCR_AREA (CODE)
 
 ; -----------------------------------------------------------------------------
@@ -185,8 +185,8 @@ highspd_dscr_end:
 	.db	0			; bCountryCode (none)
 	.db	1			; bNumDescriptors
 	.db	DSCR_HID_REPORT_TYPE
-	.db	(hid_report_dscr_end - _hid_report_dscr) % 256
-	.db	(hid_report_dscr_end - _hid_report_dscr) / 256
+	.db	(_hid_report_dscr_end - _hid_report_dscr) % 256
+	.db	(_hid_report_dscr_end - _hid_report_dscr) / 256
 
 	; EP4 IN, interrupt
 	.db	DSCR_ENDPOINT_LEN
@@ -283,8 +283,8 @@ fullspd_dscr_end:
 	.db	0
 	.db	1
 	.db	DSCR_HID_REPORT_TYPE
-	.db	(hid_report_dscr_end - _hid_report_dscr) % 256
-	.db	(hid_report_dscr_end - _hid_report_dscr) / 256
+	.db	(_hid_report_dscr_end - _hid_report_dscr) % 256
+	.db	(_hid_report_dscr_end - _hid_report_dscr) / 256
 
 	; EP4 IN, interrupt
 	.db	DSCR_ENDPOINT_LEN
@@ -329,7 +329,7 @@ _hid_report_dscr:
 	.db	0x09, 0x04		;   Usage (4)
 	.db	0xb1, 0x02		;   Feature (Data,Var,Abs)
 	.db	0xc0			; End Collection
-hid_report_dscr_end:
+_hid_report_dscr_end:
 
 	.even
 
