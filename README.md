@@ -57,9 +57,11 @@ below for what they really were.
 
 ## Endpoint map
 
-One interface, one alternate setting (deliberately simpler than the multi
-alt-setting descriptor set FX2 boards often ship with — that exists for
-bandwidth negotiation, which a test jig doesn't need):
+Two interfaces, one alternate setting each (deliberately simpler than the
+multi alt-setting descriptor set FX2 boards often ship with — that exists
+for bandwidth negotiation, which a test jig doesn't need):
+
+**Interface 0** (vendor-specific, class `0xFF`):
 
 | Endpoint | Type | Purpose |
 |---|---|---|
@@ -69,7 +71,20 @@ bandwidth negotiation, which a test jig doesn't need):
 | EP8 IN | Isochronous | Free-running counter byte, one packet/microframe |
 | EP0 | Control | Standard requests, plus a custom vendor RAM read/write; endpoint stall/clear-halt via the standard SET_FEATURE/CLEAR_FEATURE(ENDPOINT_HALT) requests |
 
-`EP4` is unused.
+**Interface 1** (HID, class `0x03`) — a dummy HID device for testing
+[go-usb](https://github.com/tridentsx/go-usb)'s HID transport end to end, on
+a vendor-defined usage page (`0xFF00`) so it isn't filtered by that
+library's keyboard/pointer exclusion policy. One Report ID (1), with an
+8-byte Input, Output and Feature report each (9 bytes on the wire, including
+the report-ID byte):
+
+| Endpoint | Type | Purpose |
+|---|---|---|
+| EP4 IN | Interrupt | Input report: report ID (1) + a free-running counter byte + 7 zero bytes |
+| EP0 | Control | HID class GET_REPORT/SET_REPORT for the Feature and Output reports |
+
+See "Firmware status" below for what has and hasn't been verified against
+real hardware for this interface specifically.
 
 ## Firmware status
 
@@ -171,6 +186,47 @@ against the TRM` disclaimer — every register/macro used comes from
 `fx2lib`'s real, shipped source, cross-checked against
 `sigrok-firmware-fx2lafw`'s own `fx2lafw.c` (also fetched via `git clone`,
 not paraphrased) for usage patterns.
+
+**Interface 1 (HID) is new and, unlike everything above, not yet verified
+against real hardware.** It was added to validate go-usb's HID transport
+(particularly the new macOS `IOHIDDevice` backend) since no real
+off-the-shelf HID instrument was available. What's actually been checked:
+
+- The firmware (descriptors in `dscr.a51`, `main.c`'s HID request handling)
+  builds cleanly with `make`, with no new warnings beyond the pre-existing
+  ones already present in vendored `fx2lib` code.
+- The byte layout was checked by hand against the assembler's own listing
+  output (`dscr.lst`): the config descriptor's `wTotalLength`, the HID
+  descriptor's `wDescriptorLength`, and the standalone Report descriptor's
+  length all come out exactly as intended.
+- A real, working bug was caught and fixed this way, not by running on
+  hardware: `.dw`'s literal needs to be pre-swapped to get correct
+  little-endian wire bytes (see `VID`/`PID`'s existing comment in
+  `dscr.a51`) — `bcdHID` was first written as `0x0111` (the real value) and
+  had to be corrected to `0x1101` (byte-swapped) once the listing showed it
+  would otherwise emit the wrong wire bytes.
+- **fx2lib's `setupdat.c` needed a real, deliberate patch** (not just
+  firmware in this repo's own files): its `handle_get_descriptor` has no
+  case for the HID Report descriptor type (`0x22`) and no override hook, so
+  a case for it was added directly to the vendored file, alongside a
+  comment explaining why. `handle_setupdata` also dispatches purely on
+  `bRequest` without checking `bmRequestType` first, which matters here
+  because `SET_REPORT` (`0x09`) numerically collides with the standard
+  `SET_CONFIGURATION` request — `main.c`'s `handle_set_configuration` now
+  checks `bmRequestType`/`wIndex` itself to catch this before falling
+  through to the real configuration-set logic; `GET_REPORT` (`0x01`)
+  collides with `CLEAR_FEATURE` instead, but that handler already falls
+  through to `handle_vendorcommand` for anything it doesn't recognize, so
+  no `setupdat.c` change was needed for that half.
+- `GET_IDLE`/`SET_IDLE`/`GET_PROTOCOL`/`SET_PROTOCOL` are not implemented —
+  they stall, which is spec-compliant for a non-boot-protocol HID device
+  and how plenty of real minimal HID firmware behaves, but this hasn't been
+  confirmed against a real HID host stack actually tolerating that stall on
+  this exact board.
+- **Not done**: flashing this onto the real board and running
+  `hid_test.go`'s tests (`-tags jig`, darwin/windows only — see its own
+  header comment) against it. Whoever flashes this next should run those
+  and update this note either way.
 
 ## Running the tests
 

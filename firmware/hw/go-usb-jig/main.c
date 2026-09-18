@@ -34,6 +34,104 @@ volatile WORD heartbeat_counter = 0;
 static BYTE heartbeat = 0;
 static BYTE isoCounter = 0;
 
+/* HID test interface (interface 1, EP4 IN) -- a dummy HID device for
+ * testing go-usb's HID transport end to end, since no real off-the-shelf
+ * HID instrument was available. See dscr.a51's hid_report_dscr for the
+ * report layout: one Report ID (1), 8-byte Input/Output/Feature reports
+ * each, on a vendor-defined usage page. */
+#define HID_INTERFACE_NUM 1
+
+static BYTE hid_input_counter = 0;
+static __xdata BYTE hid_output_report[8];
+static __xdata BYTE hid_feature_report[8];
+
+/* HID class request codes (HID spec 7.2), and the report-type values in
+ * wValueH for GET_REPORT/SET_REPORT. */
+#define HID_GET_REPORT 0x01
+#define HID_SET_REPORT 0x09
+#define HID_REPORT_TYPE_INPUT   1
+#define HID_REPORT_TYPE_OUTPUT  2
+#define HID_REPORT_TYPE_FEATURE 3
+
+/* is_hid_class_request reports whether this SETUP packet is a HID class
+ * request (GET_REPORT/SET_REPORT) targeting our HID interface, rather than
+ * whatever standard or vendor request the numerically colliding bRequest
+ * value (see handle_set_configuration and handle_vendorcommand below)
+ * would otherwise mean. bmRequestType's Type field (bits 6:5) is 01 for
+ * Class, and Recipient (bits 4:0) is 1 for Interface; wIndexL (SETUPDAT[4])
+ * carries the target interface number for an interface-recipient request. */
+static BOOL is_hid_class_request(void)
+{
+	return (SETUPDAT[0] & 0x60) == 0x20
+	    && (SETUPDAT[0] & 0x1F) == 0x01
+	    && SETUPDAT[4] == HID_INTERFACE_NUM;
+}
+
+/* handle_hid_get_report serves HID GET_REPORT (wValueH = report type,
+ * wValueL = report ID -- ignored, since this device only ever declares
+ * report ID 1 for each type). Reached from handle_vendorcommand, because
+ * GET_REPORT's bRequest (0x01) numerically collides with the standard
+ * CLEAR_FEATURE request that fx2lib's setupdat.c dispatches on bRequest
+ * alone; CLEAR_FEATURE's own handler falls through to handle_vendorcommand
+ * for any bmRequestType it doesn't itself recognize, which is where this is
+ * caught instead. */
+static BOOL handle_hid_get_report(void)
+{
+	BYTE report_type = SETUPDAT[3];
+	WORD count = SETUP_LENGTH();
+
+	switch (report_type) {
+	case HID_REPORT_TYPE_INPUT: {
+		__xdata BYTE snapshot[8];
+		BYTE i;
+		snapshot[0] = hid_input_counter;
+		for (i = 1; i < sizeof(snapshot); i++)
+			snapshot[i] = 0;
+		if (count > sizeof(snapshot))
+			count = sizeof(snapshot);
+		writeep0(snapshot, count);
+		return TRUE;
+	}
+	case HID_REPORT_TYPE_OUTPUT:
+		if (count > sizeof(hid_output_report))
+			count = sizeof(hid_output_report);
+		writeep0(hid_output_report, count);
+		return TRUE;
+	case HID_REPORT_TYPE_FEATURE:
+		if (count > sizeof(hid_feature_report))
+			count = sizeof(hid_feature_report);
+		writeep0(hid_feature_report, count);
+		return TRUE;
+	default:
+		return FALSE;
+	}
+}
+
+/* handle_hid_set_report serves HID SET_REPORT. Reached from
+ * handle_set_configuration, for the same kind of bRequest collision as
+ * GET_REPORT above: SET_REPORT is 0x09, the same value as the standard
+ * SET_CONFIGURATION request. */
+static BOOL handle_hid_set_report(void)
+{
+	BYTE report_type = SETUPDAT[3];
+	WORD count = SETUP_LENGTH();
+
+	switch (report_type) {
+	case HID_REPORT_TYPE_OUTPUT:
+		if (count > sizeof(hid_output_report))
+			count = sizeof(hid_output_report);
+		readep0(hid_output_report, count);
+		return TRUE;
+	case HID_REPORT_TYPE_FEATURE:
+		if (count > sizeof(hid_feature_report))
+			count = sizeof(hid_feature_report);
+		readep0(hid_feature_report, count);
+		return TRUE;
+	default:
+		return FALSE;
+	}
+}
+
 /* Debug counters for diagnosing the real bulk-transfer timeout seen from
  * both macOS (IOKit) and Windows (WinUSB): incremented in the main loop, so
  * a host can ask "did the device's own USB engine ever actually see
@@ -120,6 +218,15 @@ BOOL handle_vendorcommand(BYTE cmd)
 	BYTE offset = SETUPDAT[2]; /* wValueL */
 	WORD count = SETUP_LENGTH();
 
+	/* HID GET_REPORT (0x01) numerically collides with the standard
+	 * CLEAR_FEATURE request; see is_hid_class_request's comment and
+	 * handle_clear_feature in fx2lib/lib/setupdat.c, whose own
+	 * unrecognized-bmRequestType fallthrough is what actually reaches this
+	 * function for that request. Checked ahead of the switch below, which
+	 * is keyed on the colliding bRequest value alone. */
+	if (cmd == HID_GET_REPORT && is_hid_class_request())
+		return handle_hid_get_report();
+
 	/* offset is a BYTE (0-255) and RAM_SIZE is 256, so offset is always a
 	 * valid index; only the length needs clamping to stay in bounds. */
 	switch (cmd) {
@@ -166,7 +273,7 @@ BOOL handle_vendorcommand(BYTE cmd)
 
 BOOL handle_get_interface(BYTE ifc, BYTE *alt_ifc)
 {
-	if (ifc != 0)
+	if (ifc != 0 && ifc != HID_INTERFACE_NUM)
 		return FALSE;
 	*alt_ifc = 0;
 	return TRUE;
@@ -174,7 +281,15 @@ BOOL handle_get_interface(BYTE ifc, BYTE *alt_ifc)
 
 BOOL handle_set_interface(BYTE ifc, BYTE alt_ifc)
 {
-	if (ifc != 0 || alt_ifc != 0)
+	if (alt_ifc != 0)
+		return FALSE;
+
+	if (ifc == HID_INTERFACE_NUM) {
+		RESETTOGGLE(0x84);
+		RESETFIFO(0x04);
+		return TRUE;
+	}
+	if (ifc != 0)
 		return FALSE;
 
 	/* Reset data toggles and FIFOs for the endpoints in this interface.
@@ -197,6 +312,16 @@ BYTE handle_get_configuration(void)
 
 BOOL handle_set_configuration(BYTE cfg)
 {
+	/* HID SET_REPORT (0x09) numerically collides with the standard
+	 * SET_CONFIGURATION request that fx2lib/lib/setupdat.c's
+	 * handle_setupdata dispatches straight to this function -- unlike
+	 * GET_REPORT above, there is no unrecognized-bmRequestType fallthrough
+	 * in that path, so the check has to happen here, the one hook this
+	 * specific collision actually reaches. See is_hid_class_request's
+	 * comment. */
+	if (is_hid_class_request())
+		return handle_hid_set_report();
+
 	return (cfg == 1) ? TRUE : FALSE;
 }
 
@@ -251,8 +376,14 @@ static void setup_endpoints(void)
 	EP6CFG = bmVALID | bmDIR | bmBIT5 | bmBIT3;
 	SYNCDELAY();
 
-	/* EP4 is unused. */
-	EP4CFG &= ~bmVALID;
+	/* EP4 IN: interrupt, for the HID test interface (interface 1). Same
+	 * EPxCFG bit layout as EP2/EP6 above (TRM: EP2CFG/EP4CFG/EP6CFG/EP8CFG
+	 * are the same register at consecutive addresses), SIZE bit (bit3)
+	 * left clear for the default (512-byte) buffer -- this endpoint only
+	 * ever commits 9 bytes at a time, so the smallest available size would
+	 * do, but there's no meaningful cost to leaving it at the default the
+	 * other endpoints already use. */
+	EP4CFG = bmVALID | bmDIR | bmBIT5 | bmBIT4; /* TYPE=interrupt (11). */
 	SYNCDELAY();
 
 	/* EP8 IN: isochronous. Per TRM 8.4, EP8 is always fixed at 512 bytes,
@@ -279,6 +410,7 @@ static void setup_endpoints(void)
 	SYNCDELAY();
 
 	RESETFIFO(0x02);
+	RESETFIFO(0x04);
 	RESETFIFO(0x06);
 	RESETFIFO(0x08);
 
@@ -376,6 +508,24 @@ void main(void)
 			EP8BCH = 0;
 			SYNCDELAY();
 			EP8BCL = 1;
+		}
+
+		/* EP4 IN: the HID test interface's Input report, one Report ID
+		 * (1) byte followed by 8 data bytes, a free-running counter in
+		 * the first data byte -- InterruptTransfer on the host side
+		 * should see this incrementing across repeated reads, the same
+		 * kind of liveness check the EP1/EP8 counters give the other
+		 * transfer types. */
+		if (!(EP2468STAT & bmEP4FULL)) {
+			BYTE i;
+			EP4FIFOBUF[0] = 1; /* Report ID */
+			EP4FIFOBUF[1] = hid_input_counter++;
+			for (i = 2; i < 9; i++)
+				EP4FIFOBUF[i] = 0;
+			SYNCDELAY();
+			EP4BCH = 0;
+			SYNCDELAY();
+			EP4BCL = 9;
 		}
 	}
 }

@@ -275,6 +275,17 @@ extern __code WORD highspd_dscr;
 extern __code WORD fullspd_dscr;
 extern __code WORD dev_strings;
 
+/* go-usb-jig addition (not upstream fx2lib): the HID Report descriptor for
+ * this board's HID test interface. handle_get_descriptor below has no
+ * case for it (or for the HID descriptor type embedded in the config
+ * descriptor) because generic fx2lib predates any HID-class device using
+ * this framework; both cases are added there rather than left for a
+ * project that will never need them, since GET_DESCRIPTOR is dispatched
+ * directly to the concrete function below with no override hook. See
+ * dscr.a51's hid_report_dscr and the top-level go-usb-jig README. */
+extern __code WORD hid_report_dscr;
+#define DSCR_HID_REPORT_TYPE 0x22
+
 WORD pDevConfig = (WORD)&fullspd_dscr;
 WORD pOtherConfig = (WORD)&highspd_dscr;
 
@@ -356,6 +367,18 @@ void handle_get_descriptor(void) {
             printf ( "Other Speed Descriptor\n");
             SUDPTRH = MSB(pOtherConfig);
             SUDPTRL = LSB(pOtherConfig);
+            break;
+        case DSCR_HID_REPORT_TYPE:
+            /* go-usb-jig addition: see the extern declaration above. Real
+             * HID hosts fetch the Report descriptor standalone -- unlike
+             * the HID functional descriptor (type 0x21), which real HID
+             * stacks parse directly out of the config descriptor they
+             * already fetched rather than requesting separately, so no
+             * case for 0x21 is needed here; the config descriptor bytes are
+             * the only copy that exists (dscr.a51 embeds it there, once per
+             * speed, and does not duplicate it as a freestanding table). */
+            SUDPTRH = MSB((WORD)&hid_report_dscr);
+            SUDPTRL = LSB((WORD)&hid_report_dscr);
             break;
         default:
             printf ( "Unhandled Get Descriptor: %02x\n", SETUPDAT[3]);

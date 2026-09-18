@@ -8,11 +8,19 @@
 ;; Vendor-specific class throughout (0xFF), deliberately, so no OS built-in
 ;; class driver ever claims this device -- see the top-level README.
 ;;
-;; Endpoint map, one interface, one alternate setting:
-;;   EP1 IN   interrupt     free-running heartbeat byte
-;;   EP2 OUT  bulk          loopback source
-;;   EP6 IN   bulk          echoes whatever EP2 OUT last received
-;;   EP8 IN   isochronous   free-running counter byte, one packet/microframe
+;; Endpoint map, two interfaces:
+;;   Interface 0 (vendor-specific, one alternate setting):
+;;     EP1 IN   interrupt     free-running heartbeat byte
+;;     EP2 OUT  bulk          loopback source
+;;     EP6 IN   bulk          echoes whatever EP2 OUT last received
+;;     EP8 IN   isochronous   free-running counter byte, one packet/microframe
+;;   Interface 1 (HID, one alternate setting) -- a dummy HID device for
+;;   testing this library's HID transport end to end, since no real
+;;   off-the-shelf HID instrument was available. Vendor-defined usage page
+;;   (0xff00), so this library's own keyboard/pointer exclusion policy never
+;;   filters it out; see hid_report_dscr below and main.c's HID handling.
+;;     EP4 IN   interrupt     one Report ID (1): 8-byte input report, a
+;;                            free-running counter
 ;;
 ;; Endpoint stall/clear-halt is exercised with the standard
 ;; SET_FEATURE/CLEAR_FEATURE(ENDPOINT_HALT) requests, which fx2lib's
@@ -31,6 +39,8 @@ DSCR_STRING_TYPE	= 3
 DSCR_INTERFACE_TYPE	= 4
 DSCR_ENDPOINT_TYPE	= 5
 DSCR_DEVQUAL_TYPE	= 6
+DSCR_HID_TYPE		= 0x21
+DSCR_HID_REPORT_TYPE	= 0x22
 
 DSCR_INTERFACE_LEN	= 9
 DSCR_ENDPOINT_LEN	= 7
@@ -44,6 +54,7 @@ VID = 0x2509	; idVendor 0x0925 (Lakeview Research), byte-swapped for .dw
 PID = 0x8138	; idProduct 0x3881, byte-swapped for .dw
 
 .globl _dev_dscr, _dev_qual_dscr, _highspd_dscr, _fullspd_dscr, _dev_strings, _dev_strings_end
+.globl _hid_report_dscr
 .area DSCR_AREA (CODE)
 
 ; -----------------------------------------------------------------------------
@@ -89,7 +100,7 @@ _highspd_dscr:
 	.db	DSCR_CONFIG_TYPE
 	.db	(highspd_dscr_realend - _highspd_dscr) % 256
 	.db	(highspd_dscr_realend - _highspd_dscr) / 256
-	.db	1			; Number of interfaces
+	.db	2			; Number of interfaces
 	.db	1			; Configuration number
 	.db	0			; Configuration string (none)
 	.db	0x80			; Attributes (bus powered, no wakeup)
@@ -152,6 +163,40 @@ highspd_dscr_end:
 	.db	0x00
 	.db	0x01
 
+	; Interface 1: HID (dummy device for testing this library's HID
+	; transport -- see the header comment above and main.c).
+	.db	DSCR_INTERFACE_LEN
+	.db	DSCR_INTERFACE_TYPE
+	.db	1			; Interface index
+	.db	0			; Alternate setting index
+	.db	1			; Number of endpoints
+	.db	0x03			; Class (HID)
+	.db	0x00			; Subclass (none -- not boot keyboard/mouse)
+	.db	0x00			; Protocol (none)
+	.db	0
+
+	; HID descriptor (functional descriptor, embedded in the config
+	; descriptor per the HID spec; the report descriptor it points at is
+	; fetched separately, see hid_report_dscr and setupdat.c's
+	; handle_get_descriptor).
+	.db	9			; bLength
+	.db	DSCR_HID_TYPE
+	.dw	0x1101			; bcdHID 1.11, byte-swapped for .dw
+	.db	0			; bCountryCode (none)
+	.db	1			; bNumDescriptors
+	.db	DSCR_HID_REPORT_TYPE
+	.db	(hid_report_dscr_end - _hid_report_dscr) % 256
+	.db	(hid_report_dscr_end - _hid_report_dscr) / 256
+
+	; EP4 IN, interrupt
+	.db	DSCR_ENDPOINT_LEN
+	.db	DSCR_ENDPOINT_TYPE
+	.db	0x84
+	.db	ENDPOINT_TYPE_INT
+	.db	0x09			; 9 bytes (1 report ID + 8 data bytes)
+	.db	0x00
+	.db	0x08			; bInterval: same encoding/value as EP1 IN above.
+
 highspd_dscr_realend:
 
 	.even
@@ -164,7 +209,7 @@ _fullspd_dscr:
 	.db	DSCR_CONFIG_TYPE
 	.db	(fullspd_dscr_realend - _fullspd_dscr) % 256
 	.db	(fullspd_dscr_realend - _fullspd_dscr) / 256
-	.db	1
+	.db	2
 	.db	1
 	.db	0
 	.db	0x80
@@ -220,7 +265,71 @@ fullspd_dscr_end:
 	.db	0x00
 	.db	0x01
 
+	; Interface 1: HID (dummy device for testing this library's HID
+	; transport -- see the header comment above and main.c).
+	.db	DSCR_INTERFACE_LEN
+	.db	DSCR_INTERFACE_TYPE
+	.db	1
+	.db	0
+	.db	1
+	.db	0x03
+	.db	0x00
+	.db	0x00
+	.db	0
+
+	.db	9
+	.db	DSCR_HID_TYPE
+	.dw	0x1101			; bcdHID 1.11, byte-swapped for .dw
+	.db	0
+	.db	1
+	.db	DSCR_HID_REPORT_TYPE
+	.db	(hid_report_dscr_end - _hid_report_dscr) % 256
+	.db	(hid_report_dscr_end - _hid_report_dscr) / 256
+
+	; EP4 IN, interrupt
+	.db	DSCR_ENDPOINT_LEN
+	.db	DSCR_ENDPOINT_TYPE
+	.db	0x84
+	.db	ENDPOINT_TYPE_INT
+	.db	0x09			; 9 bytes (1 report ID + 8 data bytes)
+	.db	0x00
+	.db	0x08			; bInterval, full speed: 8ms, matching EP1 IN.
+
 fullspd_dscr_realend:
+
+	.even
+
+; -----------------------------------------------------------------------------
+; HID Report descriptor for interface 1 (see main.c's HID handling)
+; -----------------------------------------------------------------------------
+;
+; Vendor-defined usage page (0xff00), deliberately: this library's own
+; hidCollectionUsable policy (see hid.go) excludes pointer/keyboard/digitizer
+; usage pages, and a vendor page is exactly what real HID-based test
+; equipment uses. One Report ID (1), with an 8-byte Input, Output and Feature
+; report each -- enough to exercise InterruptTransfer (input, via the async
+; report pump), GetFeatureReport/SetFeatureReport, GetInputReport and
+; SetOutputReport all against real hardware. Each report's declared max
+; length as the OS reports it is 9 bytes (1 report-ID byte + 8 data bytes),
+; matching this library's convention that InterruptTransfer's payload
+; includes the leading report-ID byte.
+_hid_report_dscr:
+	.db	0x06, 0x00, 0xff	; Usage Page (Vendor Defined 0xff00)
+	.db	0x09, 0x01		; Usage (1)
+	.db	0xa1, 0x01		; Collection (Application)
+	.db	0x85, 0x01		;   Report ID (1)
+	.db	0x15, 0x00		;   Logical Minimum (0)
+	.db	0x26, 0xff, 0x00	;   Logical Maximum (255)
+	.db	0x75, 0x08		;   Report Size (8)
+	.db	0x95, 0x08		;   Report Count (8)
+	.db	0x09, 0x02		;   Usage (2)
+	.db	0x81, 0x02		;   Input (Data,Var,Abs)
+	.db	0x09, 0x03		;   Usage (3)
+	.db	0x91, 0x02		;   Output (Data,Var,Abs)
+	.db	0x09, 0x04		;   Usage (4)
+	.db	0xb1, 0x02		;   Feature (Data,Var,Abs)
+	.db	0xc0			; End Collection
+hid_report_dscr_end:
 
 	.even
 
