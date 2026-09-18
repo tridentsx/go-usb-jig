@@ -281,6 +281,27 @@ static void setup_endpoints(void)
 	RESETFIFO(0x02);
 	RESETFIFO(0x06);
 	RESETFIFO(0x08);
+
+	/* Drain any packets left stuck in EP2 OUT's quad buffer from a
+	 * previous firmware run. RESETFIFO above only resets FIFO pointers --
+	 * it does not clear the SIE's count of already-accepted, unconsumed
+	 * packets (confirmed on real hardware: EP2CS kept reporting NPAK=4/
+	 * FULL immediately after RESETFIFO). Only a real power cycle resets
+	 * that SIE-level state on its own; a software reflash (cmd/flash's
+	 * 0xA0 command) does not, since it only halts and reloads the 8051
+	 * CPU. Discarding via OUTPKTEND, the same mechanism VR_RESET_BULK
+	 * uses on demand, is what actually clears it, so do it unconditionally
+	 * on every boot rather than relying on the host to notice and ask. */
+	{
+		BYTE drain;
+		for (drain = 0; drain < 4; drain++) {
+			OUTPKTEND = 0x02 | 0x80;
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+		}
+	}
 }
 
 void main(void)
