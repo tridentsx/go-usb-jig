@@ -80,8 +80,44 @@ clean && make` was run and produced an identical build before this was
 written). Building it does not flash it — that's `cmd/flash`, a separate
 step over USB.
 
-The firmware itself has no known bugs. Two things that looked like firmware
-bugs at first turned out to be elsewhere:
+The firmware had one real bug of its own (below); everything else that
+looked like a firmware bug at first turned out to be elsewhere:
+
+- **Bulk transfers to EP2 OUT eventually timing out for good, from both
+  macOS (IOKit) and Windows (WinUSB) against the identical firmware.**
+  This one really was in the firmware: `main()`'s copy loop calls
+  `OUTPKTEND` to release each EP2 OUT buffer it's consumed, but
+  `OUTPKTEND` has no effect at all unless `REVCTL.0` (`ENH_PKT`) is set —
+  confirmed against the real TRM's own register reference for `OUTPKTEND`
+  (Section 15), not the more casual usage examples elsewhere in the same
+  manual that don't mention this gate. This firmware never set `REVCTL`,
+  so every `OUTPKTEND` call was a silent no-op: the very first OUT packet
+  committed correctly (a special case that doesn't need `OUTPKTEND`), but
+  every buffer after that never actually got released, so the quad
+  buffer filled permanently after 3-4 packets and stayed that way —
+  across every subsequent software reflash, since `cmd/flash`'s `0xA0`
+  command halts and reloads the 8051 CPU only, never touching the USB
+  SIE/FIFO hardware that was actually stuck.
+
+  Found with a custom vendor request (`VR_READ_REGS`, exposed as
+  `TestDumpRegisters`) added specifically to read live `EP2CS`/`EP6CS`/
+  `EP2468STAT` and two firmware-side counters over USB, which showed
+  `EP2CS` reporting `NPAK=4`/`FULL` unchanged across a failed write
+  attempt and across repeated attempts to clear it — ruling out a go-usb
+  bug on either platform (confirmed independently on macOS: a raw,
+  synchronous `WritePipe` with no timeout logic at all still never got a
+  response), and ruling out a hub or cable issue (the same symptom
+  persisted through a `AbortPipe` call, which should have cancelled any
+  host-side outstanding request). Fixed with `REVCTL = 0x03;` in
+  `setup_endpoints`, matching every real TRM example that calls
+  `OUTPKTEND`.
+- **Bulk loopback occasionally returning a fixed repeating pattern
+  instead of the echoed data.** Not a firmware bug: running the test suite
+  repeatedly against an already-running device (no reflash between runs)
+  left stale packets in `EP6 IN`'s quad buffer from a previous run. Fixed
+  in `jig_test.go`'s `openJig` by calling `SetInterfaceAltSetting(0, 0)`
+  after claiming, which triggers the firmware's `handle_set_interface` and
+  resets both endpoints' FIFOs on every test run, not just after a flash.
 
 - **Bulk loopback occasionally returning a fixed repeating pattern
   instead of the echoed data.** Not a firmware bug: running the test suite

@@ -61,6 +61,22 @@ static WORD ep6_committed_count = 0;
  * ranges noted above. */
 #define VR_READ_REGS 0xB8
 
+/* VR_RESET_BULK: actively drains EP2 OUT's quad buffer and resets both
+ * bulk endpoints' FIFOs/toggles. No data stage.
+ *
+ * A bare RESETFIFO (what handle_set_interface already does on every
+ * ClaimInterface, and what a software reflash's fresh setup_endpoints()
+ * call also does) does NOT clear an OUT endpoint's already-buffered,
+ * unconsumed packets -- confirmed on real hardware: EP2CS still reported
+ * NPAK=4/FULL immediately after both a RESETFIFO and a full software
+ * reflash. RESETFIFO resets FIFO pointers, not the SIE's count of
+ * already-accepted packets sitting in the buffer. The actual fix is to
+ * commit-and-discard each stuck packet via OUTPKTEND, the same call the
+ * main loop already uses to release a packet it copied -- the hardware
+ * doesn't care whether the data was read first, only that OUTPKTEND was
+ * called once per buffered packet. */
+#define VR_RESET_BULK 0xB9
+
 #define RAM_SIZE 256
 static __xdata BYTE scratch_ram[RAM_SIZE];
 
@@ -126,6 +142,23 @@ BOOL handle_vendorcommand(BYTE cmd)
 		writeep0(reg_snapshot, count);
 		return TRUE;
 
+	case VR_RESET_BULK: {
+		BYTE i;
+		/* Quad-buffered: unconditionally discard exactly 4 packets,
+		 * generous delay between each, rather than trusting
+		 * EP2468STAT's EMPTY bit to have caught up between calls (it
+		 * did not, in practice: it can read back EMPTY while EP2CS
+		 * still separately reports FULL/NPAK=4 immediately after). */
+		for (i = 0; i < 4; i++) {
+			OUTPKTEND = 0x02 | 0x80;
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+			SYNCDELAY();
+		}
+		return TRUE;
+	}
+
 	default:
 		return FALSE;
 	}
@@ -187,6 +220,18 @@ void hispeed_isr(void) __interrupt(HISPEED_ISR)
 
 static void setup_endpoints(void)
 {
+	/* OUTPKTEND (used below in main(), and by VR_RESET_BULK) has no effect
+	 * at all unless REVCTL.0 (ENH_PKT) is set -- confirmed against the
+	 * real TRM's OUTPKTEND register reference, not the more casual usage
+	 * examples elsewhere in the same manual, which don't mention this
+	 * gate. Every real TRM example that calls OUTPKTEND sets REVCTL = 0x03
+	 * first (both ENH_PKT bits). Without this, every OUTPKTEND call in
+	 * this file was a silent no-op -- found by adding a diagnostic vendor
+	 * command and observing EP2CS never change across repeated attempts
+	 * to discard its buffered packets. */
+	REVCTL = 0x03;
+	SYNCDELAY();
+
 	/* EPxCFG's TYPE field (bits 5:4) uses the same 2-bit encoding as a USB
 	 * endpoint descriptor's transfer type: 01=isochronous, 10=bulk,
 	 * 11=interrupt (confirmed against sigrok-firmware-fx2lafw's
