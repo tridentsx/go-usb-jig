@@ -65,6 +65,7 @@ func TestAsyncBulkLoopback(t *testing.T) {
 // submitting goroutine before Wait blocks for the real result.
 func TestAsyncTransferSubmitReturnsPromptly(t *testing.T) {
 	handle := openJig(t)
+	drainEP6IN(t, handle)
 
 	const timeout = 2 * time.Second
 
@@ -101,6 +102,40 @@ func TestAsyncTransferSubmitReturnsPromptly(t *testing.T) {
 	}
 	if waitElapsed < submitElapsed {
 		t.Errorf("Wait returned in %v, faster than Submit's %v -- the real transfer time should be in Wait, not Submit", waitElapsed, submitElapsed)
+	}
+}
+
+// drainEP6IN reads and discards real data left sitting in EP6 IN's
+// quad buffer by an earlier test in the same process, until a read
+// genuinely times out (nothing left). openJig's own SetInterfaceAltSetting
+// reset already does this for TestBulkLoopback's benefit (see its comment),
+// but that alone was not enough here: found on real hardware that
+// TestAsyncTransferSubmitReturnsPromptly's "EP6 IN has nothing queued"
+// assumption failed intermittently, resolving in real double-digit
+// microseconds instead of timing out -- picking up a real, stale packet,
+// not a bug in the transfer path itself. This establishes that
+// precondition directly, by observation, instead of assuming it holds.
+func drainEP6IN(t *testing.T, handle *usb.DeviceHandle) {
+	t.Helper()
+
+	for {
+		drain, err := handle.NewBulkTransfer(epBulkIn, 64)
+		if err != nil {
+			t.Fatalf("NewBulkTransfer(drain): %v", err)
+		}
+		drain.SetTimeout(50 * time.Millisecond)
+		if err := drain.Submit(); err != nil {
+			t.Fatalf("Submit(drain): %v", err)
+		}
+		err = drain.Wait()
+		if err == usb.ErrTimeout {
+			return // genuinely empty now
+		}
+		if err != nil {
+			t.Fatalf("Wait(drain): %v", err)
+		}
+		// Got real residual data; loop and check again -- the quad buffer
+		// holds at most 4 packets, so this converges in a handful of tries.
 	}
 }
 
