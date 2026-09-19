@@ -103,3 +103,45 @@ func TestAsyncTransferSubmitReturnsPromptly(t *testing.T) {
 		t.Errorf("Wait returned in %v, faster than Submit's %v -- the real transfer time should be in Wait, not Submit", waitElapsed, submitElapsed)
 	}
 }
+
+// TestCloseAfterAsyncTransferDoesNotDeadlock is a regression test for a
+// real deadlock found on real Linux hardware while testing this exact
+// board: go-usb's Close() cancels outstanding URBs via USBDEVFS_DISCARDURB
+// specifically so a REAPURB call already blocked in the kernel unblocks --
+// but once the reap loop has reaped everything and gone back to a *fresh*
+// blocking REAPURB call with nothing outstanding, there is nothing left
+// for Close to cancel, and that call never returns on its own. Fixed on
+// go-usb's side by switching the reap loop to a non-blocking, polled
+// USBDEVFS_REAPURBNDELAY; this test guards against it regressing.
+//
+// The key is that the transfer below has already completed (Wait
+// returned) and been reaped by the time Close runs -- exactly the state
+// that used to hang forever, as opposed to closing while something is
+// still genuinely in flight.
+func TestCloseAfterAsyncTransferDoesNotDeadlock(t *testing.T) {
+	handle := openJig(t)
+
+	at, err := handle.NewInterruptTransfer(epInterruptIn, 64)
+	if err != nil {
+		t.Fatalf("NewInterruptTransfer: %v", err)
+	}
+	at.SetTimeout(2 * time.Second)
+	if err := at.Submit(); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if err := at.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- handle.Close() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return within 5s -- deadlocked (see this test's own doc comment for the real bug it guards against)")
+	}
+}
