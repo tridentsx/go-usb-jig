@@ -17,6 +17,7 @@ import (
 // moves real data correctly, not just that it returns without error.
 func TestAsyncBulkLoopback(t *testing.T) {
 	handle := openJig(t)
+	drainEP6IN(t, handle)
 
 	want := make([]byte, 64)
 	for i := range want {
