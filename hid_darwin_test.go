@@ -1,4 +1,4 @@
-//go:build jig && (darwin || windows)
+//go:build jig && darwin
 
 // Hardware-gated test against go-usb-jig's dummy HID interface (interface
 // 1, EP4 IN) -- see firmware/hw/go-usb-jig/dscr.a51 and main.c's HID
@@ -6,11 +6,14 @@
 // available to validate go-usb's HID transport (particularly the new macOS
 // IOHIDDevice backend) against real hardware.
 //
-// darwin/windows only: IsHID/GetFeatureReport/HIDReportLengths etc. are
+// darwin only: IsHID/GetFeatureReport/HIDReportLengths etc. are
 // deliberately platform-specific in go-usb, not part of its enforced
 // cross-platform contract -- Linux's HID story is raw transfers after
 // DetachKernelDriver instead (see go-usb's README), a fundamentally
-// different shape of test this file doesn't attempt to cover.
+// different shape of test this file doesn't attempt to cover. Windows
+// can't run this test at all against this board -- see
+// hid_windows_test.go for why, and don't add a windows build tag back
+// here without reading that file's comment first.
 
 package jig
 
